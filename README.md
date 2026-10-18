@@ -133,11 +133,11 @@ go mod tidy
 go run .
 ```
 
-生产构建：`cd web && pnpm build && go build .`（`web/dist` 会被 `go:embed` 打进二进制）
+生产构建：`cd web && pnpm build && go build .`（`web/dist` 会被 `go:embed` 打进二进制，所以**必须先构建前端**）
 
-运行测试：`go test ./...`（端到端覆盖鉴权、RBAC、邀请码、聊天与通话信令）
+运行测试：`go test ./...`（端到端覆盖鉴权、RBAC、邀请码、聊天与通话信令）。如果还没构建前端，用 `go test -tags noembed ./...` 只测后端。
 
-推到 GitHub 后会自动跑 CI：`.github/workflows/ci.yml` 做 gofmt / go vet / go test / 前端构建，`.github/workflows/docker.yml` 构建并推送 Docker 镜像。
+> 不想在本机装 Go / Node / Docker 也可以：推到 GitHub 后 `.github/workflows/ci.yml` 会自动跑 gofmt / go vet / go test / 前端构建，`.github/workflows/docker.yml` 会自动构建并推送 Docker 镜像，本机只需要 `git push`。
 
 ## ⚙️ 环境变量
 

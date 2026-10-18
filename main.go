@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"io/fs"
 	"log"
@@ -15,9 +14,6 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
-
-//go:embed all:web/dist
-var webDist embed.FS
 
 // withSecureHeaders 全局安全响应头
 func withSecureHeaders(next http.Handler) http.Handler {

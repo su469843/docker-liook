@@ -7,11 +7,31 @@ on:
   workflow_dispatch:
 
 jobs:
-  go:
-    name: Go 测试
+  build:
+    name: 构建与测试
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 前端产物会被 go:embed 打进二进制，必须先构建前端，
+      # 否则 go vet / go test 会报 "pattern all:web/dist: no matching files found"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: 安装前端依赖
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建前端
+        working-directory: web
+        run: pnpm build
 
       - uses: actions/setup-go@v5
         with:
@@ -33,26 +53,5 @@ jobs:
       - name: go test
         run: go test -count=1 ./...
 
-  web:
-    name: 前端构建
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.28.2
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: 安装依赖
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-
-      - name: 构建
-        working-directory: web
-        run: pnpm build
+      - name: 编译检查（含前端嵌入）
+        run: go build -trimpath -ldflags="-s -w" -o /tmp/course-hub .
