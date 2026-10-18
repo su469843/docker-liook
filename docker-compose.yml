@@ -53,6 +53,10 @@ services:
       TURN_URL: ${TURN_URL:-}
       TURN_USER: ${TURN_USER:-}
       TURN_PASS: ${TURN_PASS:-}
+      # TURN 共享密钥（coturn use-auth-secret，推荐）：下发 2 小时临时账号，避免 TURN 被白嫖
+      TURN_SECRET: ${TURN_SECRET:-}
+      # 排障开关：前端白屏时可临时设 true 关闭 CSP
+      CSP_DISABLE: ${CSP_DISABLE:-false}
       # 视频转码 / 播放（服务端 ffmpeg 切 HLS + AES-128 加密 + 有效期签名地址）
       FFMPEG_PATH: ${FFMPEG_PATH:-/usr/bin/ffmpeg}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-4096}

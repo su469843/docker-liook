@@ -35,6 +35,9 @@ type Config struct {
 	TurnURL       string // 可选 TURN 服务器（视频通话 NAT 中继），逗号分隔多个 url
 	TurnUser      string
 	TurnPass      string
+	TurnSecret    string // coturn use-auth-secret 的共享密钥：配置后下发短时效临时账号，避免 TURN 被白嫖
+
+	DisableCSP bool // 排障用：设 true 关闭 Content-Security-Policy（默认开启）
 
 	FFmpegPath   string // 服务端转码 HLS 用的 ffmpeg 可执行文件（默认 ffmpeg）
 	MaxUploadMB  int    // 单个视频上传上限（MB）
@@ -63,6 +66,8 @@ func LoadConfig() *Config {
 		TurnURL:       getenv("TURN_URL", ""),
 		TurnUser:      getenv("TURN_USER", ""),
 		TurnPass:      getenv("TURN_PASS", ""),
+		TurnSecret:    os.Getenv("TURN_SECRET"),
+		DisableCSP:    getenv("CSP_DISABLE", "false") == "true",
 		FFmpegPath:    getenv("FFMPEG_PATH", "ffmpeg"),
 		MaxUploadMB:   getenvInt("MAX_UPLOAD_MB", 4096),
 		SignTTLMin:    getenvInt("SIGN_TTL_MINUTES", 120),

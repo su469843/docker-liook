@@ -658,22 +658,26 @@ func (a *API) handleHLS(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "文件名无效")
 		return
 	}
+	sid := strconv.FormatInt(id, 10)
+	reqPath := "/hls/" + sid + "/" + file
+	signed := a.checkSign(r, reqPath)
+	var viewer *User
+	if !signed {
+		// 老数据/兼容：Cookie 鉴权 + 课程访问控制
+		viewer = a.userFromCookie(r)
+		if viewer == nil {
+			// 先鉴权再查库，避免通过 404/403 探测课时是否存在
+			writeErr(w, http.StatusUnauthorized, "未登录或链接已过期")
+			return
+		}
+	}
 	l, err := a.db.GetLesson(id)
 	if err != nil || l.Kind != "video" {
 		writeErr(w, 404, "课时不存在")
 		return
 	}
-	sid := strconv.FormatInt(id, 10)
-	reqPath := "/hls/" + sid + "/" + file
-	signed := a.checkSign(r, reqPath)
 	if !signed {
-		// 老数据/兼容：Cookie 鉴权 + 课程访问控制
-		u := a.userFromCookie(r)
-		if u == nil {
-			writeErr(w, http.StatusUnauthorized, "未登录或链接已过期")
-			return
-		}
-		if _, ok := a.canAccessCourse(u, l.CourseID); !ok {
+		if _, ok := a.canAccessCourse(viewer, l.CourseID); !ok {
 			writeErr(w, http.StatusForbidden, "无权观看该课时")
 			return
 		}
@@ -750,19 +754,23 @@ func (a *API) handleLessonStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "无效的课时 ID")
 		return
 	}
+	sid := strconv.FormatInt(id, 10)
+	signed := a.checkSign(r, "/api/lessons/"+sid+"/stream")
+	var viewer *User
+	if !signed {
+		viewer = a.userFromCookie(r)
+		if viewer == nil {
+			writeErr(w, http.StatusUnauthorized, "链接已过期，请刷新页面")
+			return
+		}
+	}
 	l, err := a.db.GetLesson(id)
 	if err != nil || l.Kind != "video" || l.Content == "" {
 		writeErr(w, 404, "视频不存在")
 		return
 	}
-	sid := strconv.FormatInt(id, 10)
-	if !a.checkSign(r, "/api/lessons/"+sid+"/stream") {
-		u := a.userFromCookie(r)
-		if u == nil {
-			writeErr(w, http.StatusUnauthorized, "链接已过期，请刷新页面")
-			return
-		}
-		if _, ok := a.canAccessCourse(u, l.CourseID); !ok {
+	if !signed {
+		if _, ok := a.canAccessCourse(viewer, l.CourseID); !ok {
 			writeErr(w, http.StatusForbidden, "无权观看该课时")
 			return
 		}

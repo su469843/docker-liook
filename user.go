@@ -51,17 +51,18 @@ func (l *loginLimiter) reset(key string) {
 
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_]{3,32}$`)
 
-func clientIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i > 0 {
-		host = host[:i]
-	}
-	return host
-}
-
 // ---------------- 认证接口 ----------------
 
 func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, "跨站请求被拒绝")
+		return
+	}
+	// 注册限流：同一 IP 10 分钟内最多 10 个账号，防止批量刷号
+	if !a.rate().allow("reg:"+clientIP(r), 10.0/600.0, 10) {
+		writeErr(w, http.StatusTooManyRequests, "注册过于频繁，请稍后再试")
+		return
+	}
 	st := a.db.GetSettings()
 	switch st.RegisterMode {
 	case "closed":
@@ -115,6 +116,10 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, "跨站请求被拒绝")
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -124,12 +129,17 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := clientIP(r) + "|" + req.Username
+	if !a.rate().allow("login-ip:"+clientIP(r), 0.2, 30) {
+		writeErr(w, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试")
+		return
+	}
 	if a.limiter.blocked(key) {
 		writeErr(w, http.StatusTooManyRequests, "尝试次数过多，请 15 分钟后再试")
 		return
 	}
 	u, err := a.db.GetUserByUsername(req.Username)
 	if err != nil {
+		bcryptDummyCompare(req.Password) // 对齐响应时间，避免枚举用户名
 		a.limiter.recordFail(key)
 		writeErr(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
@@ -171,7 +181,12 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 // ---------------- 站点设置（管理员） ----------------
 
 func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request, u *User) {
-	writeJSON(w, http.StatusOK, a.db.GetSettings())
+	st := a.db.GetSettings()
+	out := *st
+	// 密钥类字段脱敏返回（前端不改就不会覆盖，见 applyTo）
+	out.S3SecretKey = maskSecret(out.S3SecretKey)
+	out.WebDAVPass = maskSecret(out.WebDAVPass)
+	writeJSON(w, http.StatusOK, &out)
 }
 
 // storageReq 后台存储设置（指针：未传的字段保持原值）
@@ -204,7 +219,7 @@ func (s *storageReq) applyTo(st *Settings) bool {
 	if s.S3AccessKey != nil {
 		st.S3AccessKey = strings.TrimSpace(*s.S3AccessKey)
 	}
-	if s.S3SecretKey != nil {
+	if s.S3SecretKey != nil && *s.S3SecretKey != maskedSecret {
 		st.S3SecretKey = strings.TrimSpace(*s.S3SecretKey)
 	}
 	if s.S3UseSSL != nil {
@@ -216,7 +231,7 @@ func (s *storageReq) applyTo(st *Settings) bool {
 	if s.WebDAVUser != nil {
 		st.WebDAVUser = strings.TrimSpace(*s.WebDAVUser)
 	}
-	if s.WebDAVPass != nil {
+	if s.WebDAVPass != nil && *s.WebDAVPass != maskedSecret {
 		st.WebDAVPass = *s.WebDAVPass
 	}
 	return true

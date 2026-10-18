@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -257,6 +261,24 @@ func (c *client) readPump() {
 }
 
 func (h *Hub) handleMsg(c *client, m *wsMsg) {
+	uid := strconv.FormatInt(c.user.ID, 10)
+	// 信令/聊天限流：防止单账号刷消息或刷信令拖垮服务
+	switch m.Type {
+	case "chat.send", "group.send":
+		if !h.api.rate().allow("chat:"+uid, 2, 15) {
+			h.sendTo(c.user.ID, serverMsg{Type: "error", Message: "发送太频繁，请稍后再试"})
+			return
+		}
+	case "call.offer", "call.answer", "call.end":
+		if !h.api.rate().allow("sig:"+uid, 2, 20) {
+			h.sendTo(c.user.ID, serverMsg{Type: "error", Message: "操作太频繁，请稍后再试"})
+			return
+		}
+	case "call.ice":
+		if !h.api.rate().allow("ice:"+uid, 15, 120) {
+			return // ICE 候选直接丢弃即可，静默限流
+		}
+	}
 	switch m.Type {
 	case "chat.send":
 		h.handleChatSend(c, m)
@@ -554,6 +576,15 @@ func (a *API) handleGroupRead(w http.ResponseWriter, r *http.Request, u *User) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// turnCredential 生成 coturn REST API 短时效账号（use-auth-secret 模式）：
+// username = <过期时间戳>:<用户ID>，password = base64(HMAC-SHA1(secret, username))
+func turnCredential(secret string, uid int64) (username, credential string) {
+	username = fmt.Sprintf("%d:%d", time.Now().Add(2*time.Hour).Unix(), uid)
+	mac := hmac.New(sha1.New, []byte(secret))
+	mac.Write([]byte(username))
+	return username, base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
 // ICE 服务器配置（前端建立 WebRTC 连接用）
 func (a *API) handleIce(w http.ResponseWriter, r *http.Request, u *User) {
 	ice := []map[string]any{
@@ -567,11 +598,17 @@ func (a *API) handleIce(w http.ResponseWriter, r *http.Request, u *User) {
 			}
 		}
 		if len(urls) > 0 {
-			ice = append(ice, map[string]any{
-				"urls":       urls,
-				"username":   a.cfg.TurnUser,
-				"credential": a.cfg.TurnPass,
-			})
+			cred := map[string]any{"urls": urls}
+			if a.cfg.TurnSecret != "" {
+				// 短时效临时账号，避免 TURN 被站外白嫖
+				username, password := turnCredential(a.cfg.TurnSecret, u.ID)
+				cred["username"] = username
+				cred["credential"] = password
+			} else {
+				cred["username"] = a.cfg.TurnUser
+				cred["credential"] = a.cfg.TurnPass
+			}
+			ice = append(ice, cred)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"iceServers": ice})

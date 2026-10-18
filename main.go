@@ -15,15 +15,30 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// withSecureHeaders 全局安全响应头
-func withSecureHeaders(next http.Handler) http.Handler {
+// securityHeaders 全局安全响应头（CSP 与资源类型限制）
+const cspPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; " +
+	"connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+
+func withSecureHeaders(next http.Handler, disableCSP bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "same-origin")
+		// 只允许本站使用摄像头/麦克风（通话用），其余敏感能力全部关闭
+		h.Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(), payment=(), usb=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		if !disableCSP {
+			h.Set("Content-Security-Policy", cspPolicy)
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// wrapHandler 统一出口：安全响应头 + JSON 请求体上限（1MB，上传类请求另有精确限制）
+func wrapHandler(h http.Handler, disableCSP bool) http.Handler {
+	return withBodyLimit(withSecureHeaders(h, disableCSP), 1<<20)
 }
 
 func main() {
@@ -74,7 +89,7 @@ func main() {
 		log.Printf("注册模式：开放注册")
 	}
 
-	api := &API{cfg: cfg, st: st, db: db, limiter: newLoginLimiter()}
+	api := &API{cfg: cfg, st: st, db: db, limiter: newLoginLimiter(), rl: newRateLimiter()}
 	api.hub = newHub(api)
 
 	mux := http.NewServeMux()
@@ -129,7 +144,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
-		Handler: withSecureHeaders(mux),
+		Handler: wrapHandler(mux, cfg.DisableCSP),
 		// 防止慢速请求拖住连接（HLS 分片与 WebSocket 不受影响）
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,

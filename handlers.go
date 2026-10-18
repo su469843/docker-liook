@@ -27,6 +27,17 @@ type API struct {
 	stMu     sync.Mutex
 	stCustom Storage
 	stSig    string
+
+	// 通用限流（注册 / 登录 IP / 聊天 / 信令）
+	rl *rateLimiter
+}
+
+// rate 惰性初始化限流器（测试构造 API 时可能没显式赋值）
+func (a *API) rate() *rateLimiter {
+	if a.rl == nil {
+		a.rl = newRateLimiter()
+	}
+	return a.rl
 }
 
 func (a *API) routes(mux *http.ServeMux) {

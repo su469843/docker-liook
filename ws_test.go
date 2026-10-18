@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -46,11 +50,11 @@ func newTestAPI(t *testing.T) (*API, http.Handler) {
 	if _, err := db.CreateUser(&User{Username: "admin", PasswordHash: string(hash), DisplayName: "管理员", Role: "admin", Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	api := &API{cfg: cfg, st: st, db: db, limiter: newLoginLimiter()}
+	api := &API{cfg: cfg, st: st, db: db, limiter: newLoginLimiter(), rl: newRateLimiter()}
 	api.hub = newHub(api)
 	mux := http.NewServeMux()
 	api.routes(mux)
-	return api, withSecureHeaders(mux)
+	return api, wrapHandler(mux, false)
 }
 
 func newClient() *http.Client {
@@ -850,5 +854,129 @@ func TestVideoUploadAndSignedPlayback(t *testing.T) {
 	st2 := waitReady(l2sid)
 	if st2["video_url"] == "" {
 		t.Fatalf("分片上传后应可播放: %+v", st2)
+	}
+}
+
+// TestSecurityHardening 覆盖安全基线：安全响应头、未登录一律 401、跨站请求拒绝、
+// 超大请求体限制、注册限流、后台密钥脱敏、TURN 临时账号。
+func TestSecurityHardening(t *testing.T) {
+	api, handler := newTestAPI(t)
+	srv := httptest.NewServer(handler)
+	testBase = srv.URL
+	defer srv.Close()
+
+	// 1) 安全响应头
+	resp, err := http.Get(testBase + "/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	want := map[string]string{
+		"X-Content-Type-Options":     "nosniff",
+		"X-Frame-Options":            "DENY",
+		"Referrer-Policy":            "same-origin",
+		"Cross-Origin-Opener-Policy": "same-origin",
+	}
+	for k, v := range want {
+		if got := resp.Header.Get(k); got != v {
+			t.Fatalf("安全头 %s 期望 %q，实际 %q", k, v, got)
+		}
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("CSP 缺失或过弱: %q", csp)
+	}
+	if resp.Header.Get("Permissions-Policy") == "" {
+		t.Fatal("缺少 Permissions-Policy")
+	}
+
+	// 2) 未登录访问受保护接口 / 媒体 → 401
+	for _, p := range []string{
+		"/api/courses", "/api/settings", "/api/contacts", "/api/groups",
+		"/api/ice", "/hls/1/index.m3u8", "/api/lessons/1/stream", "/api/lessons/1/file",
+	} {
+		r, err := http.Get(testBase + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s 未登录应 401，实际 %d", p, r.StatusCode)
+		}
+	}
+
+	// 3) 跨站 POST（Origin 不同源）被拒
+	req, _ := http.NewRequest(http.MethodPost, testBase+"/api/login",
+		strings.NewReader(`{"username":"admin","password":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	r3, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r3.Body.Close()
+	if r3.StatusCode != http.StatusForbidden {
+		t.Fatalf("跨站请求应 403，实际 %d", r3.StatusCode)
+	}
+
+	// 4) 超大 JSON 请求体被限制（>1MB）
+	big := `{"username":"` + strings.Repeat("a", 2<<20) + `","password":"x"}`
+	r4, err := http.Post(testBase+"/api/login", "application/json", strings.NewReader(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r4.Body.Close()
+	if r4.StatusCode == http.StatusOK {
+		t.Fatal("超大请求体不应被接受")
+	}
+
+	// 5) 注册限流：同一 IP 连续注册超过配额 → 429
+	codes := []int{}
+	for i := 0; i < 11; i++ {
+		r, err := http.Post(testBase+"/api/register", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"username":"spam_%d","password":"pass123"}`, i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		codes = append(codes, r.StatusCode)
+	}
+	if codes[10] != http.StatusTooManyRequests {
+		t.Fatalf("注册限流未生效: %v", codes)
+	}
+
+	// 6) 后台设置里的密钥脱敏返回，且用打码值保存不会覆盖真实密钥
+	c := newClient()
+	loginResp := postJSON(t, c, "/api/login", map[string]string{"username": "admin", "password": "admin-pass-123"})
+	loginResp.Body.Close()
+	decode(t, putJSON(t, c, "/api/settings", map[string]any{
+		"storage_type": "s3", "s3_endpoint": "minio.local:9000", "s3_bucket": "bucket",
+		"s3_access_key": "ak", "s3_secret_key": "super-secret-key",
+	}), &Settings{})
+	var st Settings
+	getJSON(t, c, "/api/settings", &st)
+	if st.S3SecretKey != maskedSecret {
+		t.Fatalf("密钥应脱敏返回，实际 %q", st.S3SecretKey)
+	}
+	if st.S3Endpoint != "minio.local:9000" {
+		t.Fatalf("普通字段不应被打码: %+v", st)
+	}
+	decode(t, putJSON(t, c, "/api/settings", map[string]any{
+		"s3_secret_key": maskedSecret, "webdav_password": maskedSecret,
+	}), &Settings{})
+	if got := api.db.GetSettings().S3SecretKey; got != "super-secret-key" {
+		t.Fatalf("打码值不应覆盖真实密钥，实际 %q", got)
+	}
+
+	// 7) TURN 临时账号（coturn use-auth-secret）
+	username, password := turnCredential("turn-secret", 42)
+	parts := strings.SplitN(username, ":", 2)
+	if len(parts) != 2 || parts[1] != "42" {
+		t.Fatalf("TURN 临时用户名格式错误: %q", username)
+	}
+	mac := hmac.New(sha1.New, []byte("turn-secret"))
+	mac.Write([]byte(username))
+	if password != base64.StdEncoding.EncodeToString(mac.Sum(nil)) {
+		t.Fatal("TURN 临时密码计算错误")
 	}
 }
