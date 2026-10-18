@@ -36,6 +36,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化数据库失败: %v", err)
 	}
+	// 转码是进程内任务，重启后不会自动续：把「转码中」的课时标为失败，免得一直转圈
+	db.ResetStuckLessons()
 
 	// 首次启动：自动创建管理员账号（用户名 admin，密码取 ADMIN_PASSWORD）
 	if n, _ := db.CountUsers(); n == 0 {

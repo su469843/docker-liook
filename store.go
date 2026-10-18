@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -697,6 +698,15 @@ func (s *Store) SetLessonVideo(id int64, content string, size int64, duration fl
 func (s *Store) SetLessonStatus(id int64, status string) error {
 	_, err := s.db.Exec(`UPDATE lessons SET status = ? WHERE id = ?`, status, id)
 	return err
+}
+
+// ResetStuckLessons 启动时把卡在「转码中」的课时标记为失败（转码任务在进程内，重启不会自动续）
+func (s *Store) ResetStuckLessons() {
+	if res, err := s.db.Exec(`UPDATE lessons SET status = 'failed' WHERE status = 'processing'`); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("有 %d 个课时重启前正在转码，已标记为失败（可删除后重新上传）", n)
+		}
+	}
 }
 
 func (s *Store) DeleteLesson(id int64) error {
