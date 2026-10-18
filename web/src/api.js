@@ -20,3 +20,7 @@ export async function api(path, opts = {}) {
 export function rawPut(path, body, contentType) {
   return api(path, { method: 'PUT', headers: { 'Content-Type': contentType }, body })
 }
+
+export function postForm(path, formData) {
+  return api(path, { method: 'POST', body: formData })
+}

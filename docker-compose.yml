@@ -25,7 +25,14 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       # 会话签名密钥（留空则自动生成并持久化到 /data/.jwt_secret；多实例部署必须显式指定同一个值）
       JWT_SECRET: ${JWT_SECRET:-}
-      # 是否允许学员自助注册
+      # 站点名称（首次启动写入数据库，之后以后台设置为准）
+      SITE_NAME: ${SITE_NAME:-课程中心}
+      # 注册模式（首次启动写入数据库，之后以后台设置为准）
+      #   open=开放注册 | invite=需要机构邀请码 | closed=关闭注册
+      REGISTER_MODE: ${REGISTER_MODE:-open}
+      # 机构邀请码（REGISTER_MODE=invite 时生效，留空自动生成）
+      ORG_INVITE_CODE: ${ORG_INVITE_CODE:-}
+      # 兼容旧配置：REGISTER_MODE 未设置时，true 等价 open，false 等价 closed
       ALLOW_REGISTER: ${ALLOW_REGISTER:-true}
       # 全站 HTTPS 部署时设为 true
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

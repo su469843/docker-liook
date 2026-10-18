@@ -26,7 +26,10 @@ type Config struct {
 	WebDAVUser string
 	WebDAVPass string
 
-	AllowRegister bool   // 是否允许学员自主注册
+	AllowRegister bool   // 兼容旧环境变量：仅用于首次初始化注册模式
+	RegisterMode  string // open | invite | closed（首次启动写入数据库，之后以后台设置为准）
+	SiteName      string // 站点名称（首次启动写入数据库）
+	OrgInviteCode string // 机构注册邀请码（首次初始化 invite 模式时使用）
 	CookieSecure  bool   // HTTPS 部署时设 true（Cookie 仅经 HTTPS 传输）
 	TurnURL       string // 可选 TURN 服务器（视频通话 NAT 中继），逗号分隔多个 url
 	TurnUser      string
@@ -48,10 +51,23 @@ func LoadConfig() *Config {
 		WebDAVUser:    getenv("WEBDAV_USERNAME", ""),
 		WebDAVPass:    getenv("WEBDAV_PASSWORD", ""),
 		AllowRegister: getenv("ALLOW_REGISTER", "true") == "true",
+		SiteName:      getenv("SITE_NAME", "课程中心"),
+		OrgInviteCode: strings.ToUpper(strings.TrimSpace(os.Getenv("ORG_INVITE_CODE"))),
 		CookieSecure:  getenv("COOKIE_SECURE", "false") == "true",
 		TurnURL:       getenv("TURN_URL", ""),
 		TurnUser:      getenv("TURN_USER", ""),
 		TurnPass:      getenv("TURN_PASS", ""),
+	}
+	// 注册模式优先级：REGISTER_MODE > ALLOW_REGISTER（旧变量）> open
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("REGISTER_MODE"))) {
+	case "open", "invite", "closed":
+		c.RegisterMode = strings.ToLower(strings.TrimSpace(os.Getenv("REGISTER_MODE")))
+	default:
+		if c.AllowRegister {
+			c.RegisterMode = "open"
+		} else {
+			c.RegisterMode = "closed"
+		}
 	}
 	c.Secret = os.Getenv("JWT_SECRET")
 	if c.Secret == "" {

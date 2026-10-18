@@ -1,13 +1,9 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,12 +12,19 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ---------------- WebSocket Hub（聊天 + 通话信令） ----------------
+// ---------------- WebSocket Hub（私聊 + 课程群聊 + 通话信令） ----------------
+
+type msgRef struct {
+	LessonID int64   `json:"lesson_id"`
+	Time     float64 `json:"time"`
+}
 
 type wsMsg struct {
-	Type      string          `json:"type"` // chat.send | chat.read | call.offer | call.answer | call.ice | call.end
+	Type      string          `json:"type"` // chat.send | chat.read | group.send | group.read | call.offer | call.answer | call.ice | call.end
 	To        int64           `json:"to"`
+	Group     int64           `json:"group,omitempty"` // 课程群 ID（即课程 ID）
 	Msg       *chatPayload    `json:"msg,omitempty"`
+	Ref       *msgRef         `json:"ref,omitempty"` // 群聊引用：课时 + 视频时间点
 	SDP       string          `json:"sdp,omitempty"`
 	Video     bool            `json:"video,omitempty"` // 通话类型：true=视频，false=语音
 	Candidate json.RawMessage `json:"candidate,omitempty"`
@@ -33,10 +36,12 @@ type chatPayload struct {
 }
 
 type serverMsg struct {
-	Type      string          `json:"type"` // chat.new | chat.sent | call.offer | call.answer | call.ice | call.end | call.busy | presence | error
+	Type      string          `json:"type"` // chat.new | chat.sent | group.new | group.sent | call.* | presence | error
 	From      *User           `json:"from,omitempty"`
 	FromID    int64           `json:"from_id,omitempty"`
 	Msg       *Message        `json:"msg,omitempty"`
+	GMsg      *GroupMessage   `json:"gmsg,omitempty"`
+	Group     int64           `json:"group,omitempty"`
 	SDP       string          `json:"sdp,omitempty"`
 	Video     bool            `json:"video,omitempty"` // 邀请方是否发起视频通话
 	Candidate json.RawMessage `json:"candidate,omitempty"`
@@ -223,6 +228,12 @@ func (h *Hub) handleMsg(c *client, m *wsMsg) {
 		if peer := mustUser(h.api, m.To); peer != nil && h.api.db.CanChat(c.user, peer) {
 			h.api.db.MarkRead(c.user.ID, m.To)
 		}
+	case "group.send":
+		h.handleGroupSend(c, m)
+	case "group.read":
+		if m.Group > 0 && h.api.db.CanGroupChat(c.user, m.Group) {
+			h.api.db.MarkGroupRead(m.Group, c.user.ID, h.api.db.LatestGroupMessageID(m.Group))
+		}
 	case "call.offer", "call.answer", "call.ice", "call.end":
 		h.handleCall(c, m)
 	default:
@@ -263,6 +274,54 @@ func (h *Hub) handleChatSend(c *client, m *wsMsg) {
 	// 实时推送给接收方（在线时）
 	if online := h.sendTo(m.To, serverMsg{Type: "chat.new", From: publicUser(c.user), Msg: saved}); online {
 		h.api.db.MarkRead(m.To, c.user.ID) // 对方在线且已推送，视为已读
+	}
+}
+
+// handleGroupSend 课程群聊：所有成员可见，可引用某课时的视频时间点
+func (h *Hub) handleGroupSend(c *client, m *wsMsg) {
+	if m.Group <= 0 || m.Msg == nil {
+		h.sendTo(c.user.ID, serverMsg{Type: "error", Message: "消息参数无效"})
+		return
+	}
+	if !h.api.db.CanGroupChat(c.user, m.Group) {
+		h.sendTo(c.user.ID, serverMsg{Type: "error", Message: "你不在此课程群中"})
+		return
+	}
+	typ := "text"
+	if m.Msg.Type == "image" {
+		typ = "image"
+	}
+	content := strings.TrimSpace(m.Msg.Content)
+	if content == "" || len(content) > 4000 {
+		h.sendTo(c.user.ID, serverMsg{Type: "error", Message: "消息为空或超长"})
+		return
+	}
+	var refLessonID int64
+	var refTime float64
+	if m.Ref != nil && m.Ref.LessonID > 0 {
+		if l, err := h.api.db.GetLesson(m.Ref.LessonID); err == nil && l.CourseID == m.Group {
+			refLessonID = l.ID
+			refTime = m.Ref.Time
+			if refTime < 0 {
+				refTime = 0
+			}
+			if refTime > 24*3600 {
+				refTime = 24 * 3600
+			}
+		}
+	}
+	gm, err := h.api.db.InsertGroupMessage(m.Group, c.user.ID, typ, content, refLessonID, refTime)
+	if err != nil {
+		h.sendTo(c.user.ID, serverMsg{Type: "error", Message: "消息保存失败"})
+		return
+	}
+	gm.SenderName = c.user.DisplayName
+	h.sendTo(c.user.ID, serverMsg{Type: "group.sent", Group: m.Group, GMsg: gm})
+	for _, uid := range h.api.db.GroupAudience(m.Group) {
+		if uid == c.user.ID {
+			continue
+		}
+		h.sendTo(uid, serverMsg{Type: "group.new", Group: m.Group, From: publicUser(c.user), GMsg: gm})
 	}
 }
 
@@ -364,79 +423,77 @@ func (a *API) handleChatHistory(w http.ResponseWriter, r *http.Request, u *User)
 	}
 	a.db.MarkRead(u.ID, peerID)
 	// 前端希望旧→新排序
+	if msgs == nil {
+		msgs = []Message{}
+	}
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	writeJSON(w, http.StatusOK, msgs)
 }
 
-var chatImgExtRe = regexp.MustCompile(`^\.(png|jpe?g|gif|webp)$`)
-
-func (a *API) handleChatUpload(w http.ResponseWriter, r *http.Request, u *User) {
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
-	file, _, err := r.FormFile("file")
+func (a *API) handleMyGroups(w http.ResponseWriter, r *http.Request, u *User) {
+	groups, err := a.db.MyGroups(u)
 	if err != nil {
-		writeErr(w, 400, "请上传图片（≤10MB）")
+		writeErr(w, 500, "查询失败")
 		return
 	}
-	defer file.Close()
-	head := make([]byte, 512)
-	n, _ := io.ReadFull(file, head)
-	if n < 8 {
-		writeErr(w, 400, "文件无效")
-		return
+	if groups == nil {
+		groups = []GroupSummary{}
 	}
-	mime := http.DetectContentType(head[:n])
-	var ext string
-	switch {
-	case mime == "image/png":
-		ext = ".png"
-	case mime == "image/jpeg":
-		ext = ".jpg"
-	case mime == "image/gif":
-		ext = ".gif"
-	case mime == "image/webp":
-		ext = ".webp"
-	default:
-		writeErr(w, 400, "仅支持 png/jpg/gif/webp 图片")
-		return
-	}
-	buf := make([]byte, 16)
-	rand.Read(buf)
-	key := "chat/" + hex.EncodeToString(buf) + ext
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		writeErr(w, 500, "读取失败")
-		return
-	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		writeErr(w, 400, "图片读取失败")
-		return
-	}
-	if err := a.st.Put(r.Context(), key, data); err != nil {
-		writeErr(w, 500, "图片保存失败: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": "/files/" + key})
+	writeJSON(w, http.StatusOK, groups)
 }
 
-var fileKeyRe = regexp.MustCompile(`^chat/[a-f0-9]{32}\.(png|jpg|gif|webp)$`)
-
-func (a *API) handleServeFile(w http.ResponseWriter, r *http.Request, u *User) {
-	key := strings.TrimPrefix(r.URL.Path, "/files/")
-	if !fileKeyRe.MatchString(key) {
-		writeErr(w, 404, "文件不存在")
+func (a *API) handleGroupHistory(w http.ResponseWriter, r *http.Request, u *User) {
+	courseID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || courseID <= 0 {
+		writeErr(w, 400, "无效课程")
 		return
 	}
-	rc, err := a.st.Get(r.Context(), key)
+	if !a.db.CanGroupChat(u, courseID) {
+		writeErr(w, http.StatusForbidden, "你不在该课程群中")
+		return
+	}
+	before := int64(0)
+	if b, err := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64); err == nil {
+		before = b
+	}
+	msgs, err := a.db.GroupHistory(courseID, before, 50)
 	if err != nil {
-		writeErr(w, 404, "文件不存在")
+		writeErr(w, 500, "查询失败")
 		return
 	}
-	defer rc.Close()
-	w.Header().Set("Content-Type", contentTypeOf(key))
-	w.Header().Set("Cache-Control", "public, max-age=604800")
-	io.Copy(w, rc)
+	if before == 0 {
+		a.db.MarkGroupRead(courseID, u.ID, a.db.LatestGroupMessageID(courseID))
+	}
+	if msgs == nil {
+		msgs = []GroupMessage{}
+	}
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+func (a *API) handleGroupRead(w http.ResponseWriter, r *http.Request, u *User) {
+	courseID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || courseID <= 0 {
+		writeErr(w, 400, "无效课程")
+		return
+	}
+	if !a.db.CanGroupChat(u, courseID) {
+		writeErr(w, http.StatusForbidden, "你不在该课程群中")
+		return
+	}
+	var req struct {
+		LastID int64 `json:"last_id"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.LastID <= 0 {
+		req.LastID = a.db.LatestGroupMessageID(courseID)
+	}
+	a.db.MarkGroupRead(courseID, u.ID, req.LastID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // ICE 服务器配置（前端建立 WebRTC 连接用）

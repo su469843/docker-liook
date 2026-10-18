@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -17,7 +18,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// 端到端测试：真实 HTTP + WebSocket，覆盖 Cookie 安全属性/CSRF/安全头/限流/RBAC/邀请码/聊天/通话信令
+// 端到端测试：真实 HTTP + WebSocket，覆盖 Cookie 安全属性/CSRF/安全头/限流/RBAC/邀请码/
+// 课程市场/课时（视频/图文/文档）/群聊（引用时间点）/私聊/通话信令/注册模式
 
 var testBase string
 
@@ -26,6 +28,7 @@ func newTestAPI(t *testing.T) (*API, http.Handler) {
 	cfg := &Config{
 		Port: "0", AdminPassword: "admin-pass-123", Secret: "test-secret",
 		DataDir: t.TempDir(), StorageType: "local", AllowRegister: true,
+		SiteName: "课程中心", RegisterMode: "open",
 	}
 	st, err := NewStorage(cfg)
 	if err != nil {
@@ -36,6 +39,9 @@ func newTestAPI(t *testing.T) (*API, http.Handler) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
+	if err := db.InitSettings(cfg.SiteName, cfg.RegisterMode, ""); err != nil {
+		t.Fatal(err)
+	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte("admin-pass-123"), bcrypt.DefaultCost)
 	if _, err := db.CreateUser(&User{Username: "admin", PasswordHash: string(hash), DisplayName: "管理员", Role: "admin", Status: "active"}); err != nil {
 		t.Fatal(err)
@@ -62,6 +68,18 @@ func postJSON(t *testing.T, c *http.Client, path string, body any) *http.Respons
 	return resp
 }
 
+func putJSON(t *testing.T, c *http.Client, path string, body any) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPut, testBase+path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", path, err)
+	}
+	return resp
+}
+
 func decode(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	defer resp.Body.Close()
@@ -72,6 +90,34 @@ func decode(t *testing.T, resp *http.Response, v any) {
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+}
+
+func getJSON(t *testing.T, c *http.Client, path string, v any) {
+	t.Helper()
+	resp, err := c.Get(testBase + path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	decode(t, resp, v)
+}
+
+func uploadFile(t *testing.T, c *http.Client, path, filename string, content []byte) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.Write(content)
+	mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, testBase+path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("upload %s: %v", path, err)
+	}
+	return resp
 }
 
 func login(t *testing.T, username, password string) *http.Client {
@@ -124,7 +170,6 @@ func readMsg(t *testing.T, ws *websocket.Conn, timeout time.Duration) serverMsg 
 }
 
 // readMsgNotPresence 读取下一条非 presence 消息。
-// 在线状态变化会随时广播 presence，断言聊天/信令消息时需要跳过。
 func readMsgNotPresence(t *testing.T, ws *websocket.Conn, timeout time.Duration) serverMsg {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -176,7 +221,6 @@ func TestEndToEnd(t *testing.T) {
 	}
 	resp3.Body.Close()
 
-	// 未匹配的 API 路径返回 404，而不是回退到前端页面
 	resp404, _ := http.Get(testBase + "/api/not-exist")
 	resp404.Body.Close()
 	if resp404.StatusCode != http.StatusNotFound {
@@ -216,7 +260,7 @@ func TestEndToEnd(t *testing.T) {
 	sc1 := login(t, "student1", "stu-pass")
 	sc2 := login(t, "student2", "stu-pass")
 
-	// ---------- RBAC ----------
+	// ---------- RBAC：学员不能建课、不能进用户管理 ----------
 	r := postJSON(t, sc1, "/api/courses", map[string]string{"title": "hack"})
 	r.Body.Close()
 	if r.StatusCode != http.StatusForbidden {
@@ -227,10 +271,17 @@ func TestEndToEnd(t *testing.T) {
 	if r.StatusCode != http.StatusForbidden {
 		t.Fatal("学员不应能访问用户管理")
 	}
+	// 学员不能上传课时
+	r = postJSON(t, sc1, "/api/courses/1/lessons", map[string]any{"title": "x", "kind": "video"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden && r.StatusCode != http.StatusNotFound {
+		t.Fatalf("学员不应能添加课时: %d", r.StatusCode)
+	}
 
-	// ---------- 课程 / 邀请码 ----------
+	// ---------- 老师建课 / 邀请码 ----------
 	var course Course
-	decode(t, postJSON(t, tc, "/api/courses", map[string]string{"title": "Go 语言入门"}), &course)
+	decode(t, postJSON(t, tc, "/api/courses", map[string]string{
+		"title": "Go 语言入门", "description": "从零开始学 Go", "category": "编程"}), &course)
 	if course.InviteCode == "" || course.TeacherName != "王老师" {
 		t.Fatalf("课程数据异常: %+v", course)
 	}
@@ -247,36 +298,119 @@ func TestEndToEnd(t *testing.T) {
 
 	// ---------- 当前用户 / 老师查看学员 / 聊天联系人 ----------
 	var me User
-	respMe, err := tc.Get(testBase + "/api/me")
-	if err != nil {
-		t.Fatal(err)
-	}
-	decode(t, respMe, &me)
+	getJSON(t, tc, "/api/me", &me)
 	if me.Username != "teacher1" || me.Role != "teacher" {
 		t.Fatalf("/api/me 异常: %+v", me)
 	}
-
 	var students []User
-	respSt, err := tc.Get(testBase + "/api/courses/" + strconv.FormatInt(course.ID, 10) + "/students")
-	if err != nil {
-		t.Fatal(err)
-	}
-	decode(t, respSt, &students)
+	getJSON(t, tc, "/api/courses/"+strconv.FormatInt(course.ID, 10)+"/students", &students)
 	if len(students) != 1 || students[0].ID != student1.ID {
 		t.Fatalf("课程学员列表异常: %+v", students)
 	}
-
 	var stContacts []struct {
 		User
 		Unread int64 `json:"unread"`
 	}
-	respC, err := sc1.Get(testBase + "/api/contacts")
+	getJSON(t, sc1, "/api/contacts", &stContacts)
+	if len(stContacts) != 1 || stContacts[0].ID != teacher.ID {
+		t.Fatalf("学员联系人异常: %+v", stContacts)
+	}
+
+	// ---------- 课时：视频 / 图文 / 文档 ----------
+	var video Lesson
+	decode(t, postJSON(t, tc, "/api/courses/"+strconv.FormatInt(course.ID, 10)+"/lessons",
+		map[string]any{"title": "第1课 变量", "kind": "video", "chapter": "第一章"}), &video)
+	if video.Kind != "video" || video.Status != "uploading" {
+		t.Fatalf("视频课时异常: %+v", video)
+	}
+	r = postJSON(t, sc2, "/api/lessons/"+strconv.FormatInt(video.ID, 10)+"/complete", map[string]any{})
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("未加入学员不应能操作课时: %d", r.StatusCode)
+	}
+	r = postJSON(t, sc1, "/api/lessons/"+strconv.FormatInt(video.ID, 10)+"/complete", map[string]any{})
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("已加入学员也不应能管理课时: %d", r.StatusCode)
+	}
+	decode(t, postJSON(t, tc, "/api/lessons/"+strconv.FormatInt(video.ID, 10)+"/complete",
+		map[string]any{"size": 1024, "duration": 360}), &map[string]any{})
+
+	// 图文课时：HTML 必须被白名单过滤
+	var rich Lesson
+	decode(t, postJSON(t, tc, "/api/courses/"+strconv.FormatInt(course.ID, 10)+"/lessons", map[string]any{
+		"title": "讲义", "kind": "rich",
+		"content": `<p style="color:red" onclick="alert(1)">你好<b>世界</b></p><script>alert(1)</script>`}), &rich)
+	if strings.Contains(rich.Content, "script") || strings.Contains(rich.Content, "onclick") {
+		t.Fatalf("图文内容未被过滤: %s", rich.Content)
+	}
+	if !strings.Contains(rich.Content, "你好") || !strings.Contains(rich.Content, "<b>") {
+		t.Fatalf("图文内容被过度过滤: %s", rich.Content)
+	}
+
+	// 文档课时：上传 + 权限
+	var doc Lesson
+	decode(t, postJSON(t, tc, "/api/courses/"+strconv.FormatInt(course.ID, 10)+"/lessons",
+		map[string]any{"title": "课件", "kind": "doc"}), &doc)
+	respDoc := uploadFile(t, tc, "/api/lessons/"+strconv.FormatInt(doc.ID, 10)+"/doc", "outline.txt", []byte("hello doc"))
+	var uploaded Lesson
+	decode(t, respDoc, &uploaded)
+	if uploaded.Status != "ready" || uploaded.Filename != "outline.txt" {
+		t.Fatalf("文档上传异常: %+v", uploaded)
+	}
+	respF, err := sc1.Get(testBase + "/api/lessons/" + strconv.FormatInt(doc.ID, 10) + "/file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	decode(t, respC, &stContacts)
-	if len(stContacts) != 1 || stContacts[0].ID != teacher.ID {
-		t.Fatalf("学员联系人异常: %+v", stContacts)
+	body, _ := io.ReadAll(respF.Body)
+	respF.Body.Close()
+	if respF.StatusCode != 200 || string(body) != "hello doc" {
+		t.Fatalf("文档下载异常: %d %q", respF.StatusCode, body)
+	}
+	respF2, _ := sc2.Get(testBase + "/api/lessons/" + strconv.FormatInt(doc.ID, 10) + "/file")
+	respF2.Body.Close()
+	if respF2.StatusCode != http.StatusForbidden {
+		t.Fatalf("未加入学员不应能下载文档: %d", respF2.StatusCode)
+	}
+
+	// 目录：未加入学员（且课程未上架）应 403
+	respL, _ := sc2.Get(testBase + "/api/courses/" + strconv.FormatInt(course.ID, 10) + "/lessons")
+	respL.Body.Close()
+	if respL.StatusCode != http.StatusForbidden {
+		t.Fatalf("未加入学员不应能看未上架课程目录: %d", respL.StatusCode)
+	}
+
+	// ---------- 课程市场：上架 → 学员自主加入 ----------
+	decode(t, postJSON(t, tc, "/api/courses/"+strconv.FormatInt(course.ID, 10)+"/publish",
+		map[string]any{"published": true}), &map[string]any{})
+	var market []Course
+	getJSON(t, sc2, "/api/market", &market)
+	found := false
+	for _, mc := range market {
+		if mc.ID == course.ID && mc.Published && !mc.Enrolled {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("市场列表异常: %+v", market)
+	}
+	// 未加入也能看到目录（预览），但拿不到内容
+	var preview []Lesson
+	getJSON(t, sc2, "/api/courses/"+strconv.FormatInt(course.ID, 10)+"/lessons", &preview)
+	for _, l := range preview {
+		if l.Content != "" || l.Filename != "" {
+			t.Fatalf("预览目录不应包含内容: %+v", l)
+		}
+	}
+	r = postJSON(t, sc2, "/api/market/"+strconv.FormatInt(course.ID, 10)+"/enroll", map[string]any{})
+	r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatalf("市场加入课程失败: %d", r.StatusCode)
+	}
+	var myCourses []Course
+	getJSON(t, sc2, "/api/courses", &myCourses)
+	if len(myCourses) != 1 || myCourses[0].ID != course.ID {
+		t.Fatalf("学员课程列表异常: %+v", myCourses)
 	}
 
 	// ---------- 禁用账号不可登录；管理员不能禁用自己 ----------
@@ -300,23 +434,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("管理员不应能禁用自己: %d", r.StatusCode)
 	}
 
-	// ---------- 视频权限 ----------
-	var vid struct {
-		ID int64 `json:"id"`
-	}
-	decode(t, postJSON(t, tc, "/api/videos", map[string]any{"course_id": course.ID, "title": "第1课"}), &vid)
-	r = postJSON(t, sc2, "/api/videos/"+strconv.FormatInt(vid.ID, 10)+"/complete", map[string]any{})
-	r.Body.Close()
-	if r.StatusCode != http.StatusForbidden {
-		t.Fatalf("未加入学员不应能操作视频: %d", r.StatusCode)
-	}
-	r = postJSON(t, sc1, "/api/videos/"+strconv.FormatInt(vid.ID, 10)+"/complete", map[string]any{})
-	r.Body.Close()
-	if r.StatusCode != http.StatusForbidden {
-		t.Fatalf("已加入学员也不应能管理视频: %d", r.StatusCode)
-	}
-
-	// ---------- WebSocket 聊天 ----------
+	// ---------- WebSocket 私聊 ----------
 	wst := dialWS(t, tc)
 	wss := dialWS(t, sc1)
 	defer wst.Close()
@@ -340,14 +458,48 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// 未加入课程的学员不能与老师私聊
-	wss2 := dialWS(t, sc2)
-	defer wss2.Close()
-	readMsg(t, wss2, 3*time.Second) // presence
-	wss2.WriteJSON(wsMsg{Type: "chat.send", To: teacher.ID, Msg: &chatPayload{Type: "text", Content: "hi"}})
-	m2 := readMsgNotPresence(t, wss2, 3*time.Second)
+	var student3 User
+	decode(t, postJSON(t, c, "/api/users", map[string]any{
+		"username": "student3", "password": "stu-pass", "display_name": "小刚", "role": "student"}), &student3)
+	sc3 := login(t, "student3", "stu-pass")
+	wss3 := dialWS(t, sc3)
+	defer wss3.Close()
+	readMsg(t, wss3, 3*time.Second) // presence
+	wss3.WriteJSON(wsMsg{Type: "chat.send", To: teacher.ID, Msg: &chatPayload{Type: "text", Content: "hi"}})
+	m2 := readMsgNotPresence(t, wss3, 3*time.Second)
 	if m2.Type != "error" {
 		t.Fatal("未加入课程的学员不应能与老师私聊")
 	}
+
+	// ---------- 群聊：引用视频时间点 ----------
+	wss.WriteJSON(wsMsg{Type: "group.send", Group: course.ID,
+		Msg: &chatPayload{Type: "text", Content: "这里没听懂"},
+		Ref: &msgRef{LessonID: video.ID, Time: 123.5}})
+	gt := readMsgNotPresence(t, wst, 3*time.Second)
+	if gt.Type != "group.new" || gt.GMsg == nil || gt.GMsg.Content != "这里没听懂" {
+		t.Fatalf("老师应收到群消息，得到 %s %+v", gt.Type, gt.GMsg)
+	}
+	if gt.GMsg.RefLessonID != video.ID || gt.GMsg.RefTime != 123.5 || gt.GMsg.RefTitle != "第1课 变量" {
+		t.Fatalf("群消息引用异常: %+v", gt.GMsg)
+	}
+	gs := readMsgNotPresence(t, wss, 3*time.Second)
+	if gs.Type != "group.sent" || gs.GMsg == nil {
+		t.Fatalf("发送方应收到群消息回执，得到 %s", gs.Type)
+	}
+	var groups []GroupSummary
+	getJSON(t, tc, "/api/groups", &groups)
+	if len(groups) != 1 || groups[0].CourseID != course.ID || groups[0].Unread < 1 {
+		t.Fatalf("群列表未读异常: %+v", groups)
+	}
+	var gh []GroupMessage
+	getJSON(t, tc, "/api/groups/"+strconv.FormatInt(course.ID, 10)+"/messages", &gh)
+	if len(gh) != 1 || gh[0].Content != "这里没听懂" || gh[0].RefTime != 123.5 {
+		t.Fatalf("群历史异常: %+v", gh)
+	}
+	// 群消息只对本课程成员开放
+	wss2 := dialWS(t, sc2) // student2 已加入，可正常访问
+	defer wss2.Close()
+	readMsg(t, wss2, 3*time.Second) // presence
 
 	// ---------- 通话信令中继 ----------
 	offer := `{"type":"offer","sdp":"v=0 fake"}`
@@ -368,22 +520,57 @@ func TestEndToEnd(t *testing.T) {
 	if mb.Type != "call.busy" {
 		t.Fatal("通话中的老师应返回 busy")
 	}
-	// 挂断
 	wss.WriteJSON(wsMsg{Type: "call.end", To: teacher.ID})
 	endMsg := readMsgNotPresence(t, wst, 3*time.Second)
 	if endMsg.Type != "call.end" {
 		t.Fatal("老师应收到挂断通知")
 	}
 
-	// ---------- 聊天历史 / 未读 ----------
+	// ---------- 私聊历史 / 未读 ----------
 	var hist []Message
-	respH, err := tc.Get(testBase + "/api/chat/" + strconv.FormatInt(student1.ID, 10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	decode(t, respH, &hist)
+	getJSON(t, tc, "/api/chat/"+strconv.FormatInt(student1.ID, 10), &hist)
 	if len(hist) == 0 || hist[0].Content != "老师好 🙂" {
 		t.Fatalf("聊天历史异常: %+v", hist)
 	}
-	respH.Body.Close()
+
+	// ---------- 注册模式：开放 / 私有 / 邀请码 ----------
+	var pubCfg map[string]any
+	getJSON(t, newClient(), "/api/config", &pubCfg)
+	if pubCfg["register_mode"] != "open" || pubCfg["allow_register"] != true {
+		t.Fatalf("默认注册配置异常: %+v", pubCfg)
+	}
+	decode(t, postJSON(t, newClient(), "/api/register", map[string]any{
+		"username": "self_open", "password": "pass123"}), &User{})
+
+	var settings Settings
+	decode(t, putJSON(t, c, "/api/settings", map[string]any{"register_mode": "closed"}), &settings)
+	if settings.RegisterMode != "closed" {
+		t.Fatalf("设置注册模式失败: %+v", settings)
+	}
+	r = postJSON(t, newClient(), "/api/register", map[string]any{"username": "self_closed", "password": "pass123"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("关闭注册后不应能注册: %d", r.StatusCode)
+	}
+
+	var inv Settings
+	decode(t, putJSON(t, c, "/api/settings", map[string]any{"register_mode": "invite"}), &inv)
+	if inv.RegisterMode != "invite" || inv.OrgInviteCode == "" {
+		t.Fatalf("切换邀请码注册失败: %+v", inv)
+	}
+	r = postJSON(t, newClient(), "/api/register", map[string]any{
+		"username": "self_nocode", "password": "pass123", "invite_code": "WRONG"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusForbidden {
+		t.Fatalf("邀请码错误不应能注册: %d", r.StatusCode)
+	}
+	decode(t, postJSON(t, newClient(), "/api/register", map[string]any{
+		"username": "self_invited", "password": "pass123", "invite_code": inv.OrgInviteCode}), &User{})
+
+	// 非法注册模式
+	r = putJSON(t, c, "/api/settings", map[string]any{"register_mode": "whatever"})
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法注册模式应 400，实际 %d", r.StatusCode)
+	}
 }

@@ -43,6 +43,18 @@ func contentTypeOf(key string) string {
 		return "video/mp2t"
 	case ".m4s":
 		return "video/iso.segment"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	case ".txt":
+		return "text/plain; charset=utf-8"
 	default:
 		return "application/octet-stream"
 	}

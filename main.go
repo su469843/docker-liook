@@ -52,6 +52,26 @@ func main() {
 		log.Printf("已创建管理员账号：admin（密码来自环境变量 ADMIN_PASSWORD，请尽快登录修改）")
 	}
 
+	// 首次启动：写入站点设置（注册模式在后台可改，环境变量只影响首次初始化）
+	if err := db.InitSettings(cfg.SiteName, cfg.RegisterMode, cfg.OrgInviteCode); err != nil {
+		log.Printf("初始化站点设置失败: %v", err)
+	}
+	settings := db.GetSettings()
+	if settings.RegisterMode == "invite" && settings.OrgInviteCode == "" {
+		settings.OrgInviteCode = genInviteCode()
+		if err := db.SaveSettings(settings); err != nil {
+			log.Printf("生成机构邀请码失败: %v", err)
+		}
+	}
+	switch settings.RegisterMode {
+	case "invite":
+		log.Printf("注册模式：邀请码注册，机构邀请码：%s（后台 → 站点设置 可查看/重置）", settings.OrgInviteCode)
+	case "closed":
+		log.Printf("注册模式：关闭（只能由管理员在后台创建账号）")
+	default:
+		log.Printf("注册模式：开放注册")
+	}
+
 	api := &API{cfg: cfg, st: st, db: db, limiter: newLoginLimiter()}
 	api.hub = newHub(api)
 
@@ -122,8 +142,8 @@ func main() {
 		}
 	}()
 
-	log.Printf("CourseHub 启动: http://localhost:%s （存储: %s，注册: %v）",
-		cfg.Port, cfg.StorageType, cfg.AllowRegister)
+	log.Printf("CourseHub 启动: http://localhost:%s （站点: %s，存储: %s）",
+		cfg.Port, settings.SiteName, cfg.StorageType)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
