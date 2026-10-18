@@ -106,6 +106,10 @@ func main() {
 			// 构建产物文件名带哈希，可长期缓存
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
+		if p == "index.html" {
+			// 入口页必须每次校验，否则升级后浏览器可能跑旧前端
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		}
 		if _, err := fs.Stat(sub, p); err != nil {
 			// SPA 回退到 index.html
 			b, err2 := fs.ReadFile(sub, "index.html")
@@ -114,6 +118,7 @@ func main() {
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 			w.Write(b)
 			return
 		}

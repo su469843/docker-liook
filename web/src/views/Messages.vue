@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, postForm } from '../api'
 import { onWS, sendWS, wsState } from '../ws'
 import { fmtDur, fmtRel, fmtTime } from '../format'
@@ -152,10 +152,10 @@ function handleServerMsg(m) {
     case 'call.end': onCallEnd(m); break
     case 'call.busy':
       teardownCall()
-      callError.value = m.message || '对方忙'
+      flashError(m.message || '对方忙')
       break
     case 'error':
-      callError.value = m.message || '操作失败'
+      flashError(m.message || '操作失败')
       break
   }
 }
@@ -168,25 +168,82 @@ const remoteVideoEl = ref(null)
 const remoteAudioEl = ref(null)
 const micOn = ref(true)
 const camOn = ref(true)
+const netState = ref('')          // 连接状态：连接中… / 已连接 / 网络中断…
+const remoteHasVideo = ref(false)
 let pc = null
 let localStream = null
+let remoteStream = null
 let pendingOffer = null
 let audioCtx = null
 let iceCache = null
 let pendingRemoteICE = []
+let errTimer = null
+let stateTimer = null
+
+const DEFAULT_ICE = [{ urls: 'stun:stun.l.google.com:19302' }]
+
+const callStatusText = computed(() => {
+  if (!call.value) return ''
+  if (call.value.status === 'incoming') return '来电'
+  if (call.value.status === 'outgoing') return '等待对方接听…'
+  return netState.value ? '通话中 · ' + netState.value : '通话中'
+})
+
+function flashError(msg, ms = 6000) {
+  clearTimeout(errTimer)
+  callError.value = msg
+  errTimer = setTimeout(() => { callError.value = '' }, ms)
+}
+function clearCallError() {
+  clearTimeout(errTimer)
+  errTimer = null
+  callError.value = ''
+}
+
+function mediaSupported() {
+  return !!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function')
+}
+function mediaErrText(e) {
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    return '当前页面不是 HTTPS 安全上下文，浏览器禁止使用摄像头/麦克风（请用 https 或 localhost 访问）'
+  }
+  const n = (e && e.name) || ''
+  if (!n) return '当前浏览器不支持摄像头/麦克风，请使用新版 Chrome / Edge / Safari'
+  if (n === 'NotAllowedError' || n === 'SecurityError') return '摄像头/麦克风权限被拒绝，请在浏览器地址栏允许后重试'
+  if (n === 'NotFoundError' || n === 'OverconstrainedError') return '没有找到可用的摄像头或麦克风'
+  if (n === 'NotReadableError' || n === 'TrackStartError') return '摄像头/麦克风被其它程序占用，请关闭其它会议/录制软件后重试'
+  return '无法访问摄像头/麦克风：' + ((e && e.message) || e)
+}
 
 async function getICE() {
   try {
     const cfg = await api('/api/ice')
-    return cfg.iceServers?.length ? cfg.iceServers : [{ urls: 'stun:stun.l.google.com:19302' }]
+    return cfg.iceServers?.length ? cfg.iceServers : DEFAULT_ICE
   } catch {
-    return [{ urls: 'stun:stun.l.google.com:19302' }]
+    return DEFAULT_ICE
+  }
+}
+
+// 打开本地采集：摄像头不可用（没设备/被占用）时自动降级为纯语音，避免整通电话直接失败
+async function openLocal(wantVideo) {
+  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  if (!wantVideo) return { stream: await navigator.mediaDevices.getUserMedia({ audio }), video: false }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio,
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+    })
+    return { stream, video: stream.getVideoTracks().length > 0 }
+  } catch {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio })
+    return { stream, video: false }
   }
 }
 
 function beepStart() {
   try {
     audioCtx = audioCtx || new AudioContext()
+    audioCtx.resume?.()
     const osc = audioCtx.createOscillator()
     const gain = audioCtx.createGain()
     osc.frequency.value = 660
@@ -200,19 +257,63 @@ function beepStop() {
   if (beepStart.stop) { beepStart.stop(); beepStart.stop = null }
 }
 
+function playEl(el) {
+  try {
+    const p = el.play?.()
+    if (p && p.catch) p.catch(() => {})
+  } catch {}
+}
+
+// 把媒体流挂到 <video> / <audio> 上。
+// 关键：通话界面（含 video/audio 元素）是在 call.status 变化之后才渲染的，
+// ontrack 往往比渲染更早触发，所以这里可能被调用多次，必须幂等且可重复。
+function attachMedia() {
+  const lv = localVideoEl.value
+  if (lv && localStream) {
+    if (lv.srcObject !== localStream) lv.srcObject = localStream
+    playEl(lv)
+  }
+  const el = call.value?.video ? remoteVideoEl.value : remoteAudioEl.value
+  if (el && remoteStream) {
+    if (el.srcObject !== remoteStream) el.srcObject = remoteStream
+    playEl(el) // 有些浏览器（iOS Safari）首次自动播放会被拦，点击画面可恢复
+  }
+}
+
 function newPC(peerId) {
-  pc = new RTCPeerConnection({ iceServers: iceCache || [{ urls: 'stun:stun.l.google.com:19302' }] })
-  pc.onicecandidate = (ev) => {
+  const conn = new RTCPeerConnection({ iceServers: iceCache || DEFAULT_ICE })
+  pc = conn
+  remoteHasVideo.value = false
+  conn.onicecandidate = (ev) => {
     if (ev.candidate) sendWS({ type: 'call.ice', to: peerId, candidate: JSON.stringify(ev.candidate) })
   }
-  pc.ontrack = (ev) => {
-    if (remoteVideoEl.value) remoteVideoEl.value.srcObject = ev.streams[0]
-    if (remoteAudioEl.value) remoteAudioEl.value.srcObject = ev.streams[0]
+  conn.ontrack = (ev) => {
+    remoteStream = (ev.streams && ev.streams[0]) || new MediaStream([ev.track])
+    if (ev.track.kind === 'video') remoteHasVideo.value = true
+    attachMedia()
+    nextTick(attachMedia)
   }
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'closed'].includes(pc?.connectionState)) teardownCall()
+  conn.onconnectionstatechange = () => {
+    if (pc !== conn) return
+    switch (conn.connectionState) {
+      case 'connected':
+        netState.value = '已连接'
+        clearTimeout(stateTimer)
+        attachMedia()
+        break
+      case 'connecting':
+        netState.value = '连接中…'
+        break
+      case 'disconnected':
+        netState.value = '网络中断…'
+        break
+      case 'failed':
+        teardownCall()
+        flashError('音视频连接失败：可能是 NAT 穿透失败，可让管理员在服务端配置 TURN_URL / TURN_USER / TURN_PASS 后重试')
+        break
+    }
   }
-  return pc
+  return conn
 }
 
 async function flushRemoteICE() {
@@ -224,50 +325,93 @@ async function flushRemoteICE() {
 }
 
 async function startCall(video) {
-  if (!activeContact.value) return
-  callError.value = ''
-  if (!iceCache) iceCache = await getICE()
-  call.value = { peer: activeContact.value, role: 'caller', video, status: 'outgoing' }
+  if (!activeContact.value || call.value) return
+  if (!mediaSupported()) { flashError(mediaErrText()); return }
+  clearCallError()
+  netState.value = ''
+  pendingRemoteICE = []
+  remoteStream = null
+  const peer = activeContact.value
+  // 先进入通话界面：用户在授权弹窗期间也能看到状态
+  call.value = { peer, role: 'caller', video: !!video, status: 'outgoing' }
+  clearTimeout(stateTimer)
+  stateTimer = setTimeout(() => {
+    if (call.value && call.value.role === 'caller' && call.value.status !== 'active') {
+      flashError('对方还没有接听（被叫方需要保持页面在线、允许摄像头和麦克风）')
+    }
+  }, 25000)
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: !!video, audio: true })
-    if (localVideoEl.value) localVideoEl.value.srcObject = localStream
-    newPC(activeContact.value.id)
+    const opened = await openLocal(!!video)
+    localStream = opened.stream
+    camOn.value = opened.video
+    if (video && !opened.video) {
+      call.value.video = false
+      flashError('未检测到可用摄像头，已改为语音通话')
+    }
+    if (!iceCache) iceCache = await getICE()
+    await nextTick()
+    attachMedia()
+    newPC(peer.id)
     localStream.getTracks().forEach((t) => pc.addTrack(t, localStream))
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    sendWS({ type: 'call.offer', to: activeContact.value.id, sdp: JSON.stringify(offer), video: !!video })
+    sendWS({ type: 'call.offer', to: peer.id, sdp: JSON.stringify(offer), video: !!call.value.video })
   } catch (e) {
-    callError.value = '无法访问摄像头/麦克风: ' + (e.message || e)
     teardownCall()
+    flashError(mediaErrText(e))
   }
 }
 
 function onIncomingCall(m) {
   if (call.value) { sendWS({ type: 'call.end', to: m.from.id }); return }
-  call.value = { peer: m.from, role: 'callee', video: !!m.video, status: 'incoming' }
+  clearCallError()
+  clearTimeout(stateTimer)
+  netState.value = ''
+  remoteStream = null
+  pendingRemoteICE = []
   pendingOffer = m.sdp
+  call.value = { peer: m.from, role: 'callee', video: !!m.video, status: 'incoming' }
+  camOn.value = !!m.video
   beepStart()
+  stateTimer = setTimeout(() => {
+    if (call.value && call.value.status === 'incoming') {
+      declineCall()
+      flashError('来电长时间无人接听，已自动挂断')
+    }
+  }, 45000)
 }
 
 async function acceptCall() {
-  if (!call.value || !pendingOffer) return
+  if (!call.value || call.value.status !== 'incoming' || !pendingOffer) return
+  clearCallError()
   beepStop()
+  clearTimeout(stateTimer)
+  const peerId = call.value.peer.id
   const wantVideo = !!call.value.video
+  const offerSDP = pendingOffer
+  if (!mediaSupported()) { declineCall(); flashError(mediaErrText()); return }
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: wantVideo, audio: true })
-    if (localVideoEl.value) localVideoEl.value.srcObject = localStream
-    newPC(call.value.peer.id)
+    const opened = await openLocal(wantVideo)
+    localStream = opened.stream
+    camOn.value = opened.video
+    if (wantVideo && !opened.video) flashError('你的摄像头不可用，本次只发送语音（仍能看到对方画面）')
+    if (!iceCache) iceCache = await getICE() // 被叫方同样需要 TURN 配置
+    newPC(peerId)
     localStream.getTracks().forEach((t) => pc.addTrack(t, localStream))
-    await pc.setRemoteDescription(JSON.parse(pendingOffer))
+    await pc.setRemoteDescription(JSON.parse(offerSDP))
     await flushRemoteICE()
     const answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    sendWS({ type: 'call.answer', to: call.value.peer.id, sdp: JSON.stringify(answer), video: wantVideo })
-    call.value.status = 'active'
+    sendWS({ type: 'call.answer', to: peerId, sdp: JSON.stringify(answer), video: wantVideo })
     pendingOffer = null
+    if (!call.value) return
+    call.value.status = 'active'
+    netState.value = '连接中…'
+    await nextTick()
+    attachMedia() // 界面已渲染，把本地预览 + 远端流挂上去
   } catch (e) {
-    callError.value = '无法访问摄像头/麦克风: ' + (e.message || e)
     declineCall()
+    flashError('接听失败：' + ((e && e.message) || e))
   }
 }
 
@@ -277,41 +421,54 @@ function declineCall() {
 }
 
 function onCallAnswer(m) {
-  if (!pc || !call.value) return
+  if (!pc || !call.value || call.value.role !== 'caller') return
   pc.setRemoteDescription(JSON.parse(m.sdp))
     .then(async () => {
       await flushRemoteICE()
-      if (call.value) call.value.status = 'active'
+      if (!call.value) return
+      call.value.status = 'active'
+      await nextTick()
+      attachMedia()
     })
-    .catch(() => {})
+    .catch((e) => flashError('建立连接失败：' + ((e && e.message) || e)))
 }
 
 function onCallIce(m) {
-  let cand = null
-  try { cand = JSON.parse(m.candidate) } catch { return }
-  if (!cand) return
+  let cand = m.candidate
+  if (typeof cand === 'string') {
+    try { cand = JSON.parse(cand) } catch { return }
+  }
+  if (!cand || typeof cand !== 'object') return
   if (pc && pc.remoteDescription) pc.addIceCandidate(cand).catch(() => {})
   else pendingRemoteICE.push(cand)
 }
 
 function onCallEnd(m) {
-  if (call.value && call.value.peer.id === m.from_id) {
-    teardownCall()
-    callError.value = '通话已结束'
-  }
+  if (!call.value || call.value.peer.id !== m.from_id) return
+  teardownCall()
+  flashError(m.message || '通话已结束', 3500)
 }
 
 function hangup() {
   if (call.value) sendWS({ type: 'call.end', to: call.value.peer.id })
   teardownCall()
+  clearCallError()
 }
 
 function teardownCall() {
   beepStop()
+  clearTimeout(stateTimer)
+  stateTimer = null
   pendingOffer = null
   pendingRemoteICE = []
+  remoteStream = null
+  remoteHasVideo.value = false
   micOn.value = true
   camOn.value = true
+  netState.value = ''
+  for (const el of [localVideoEl.value, remoteVideoEl.value, remoteAudioEl.value]) {
+    if (el) { try { el.srcObject = null } catch {} }
+  }
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop())
     localStream = null
@@ -319,6 +476,13 @@ function teardownCall() {
   if (pc) { try { pc.close() } catch {} pc = null }
   call.value = null
 }
+
+// 通话界面渲染完成 / 切换（语音↔视频）后重新挂载媒体流
+watch(
+  () => [call.value?.status, call.value?.video],
+  () => { nextTick(attachMedia) },
+  { flush: 'post' },
+)
 
 function toggleMic() {
   micOn.value = !micOn.value
@@ -489,19 +653,23 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
     </div>
 
     <!-- 通话中 -->
-    <div v-if="call && call.status !== 'incoming'" class="call-overlay">
+    <div v-if="call && call.status !== 'incoming'" class="call-overlay" @click="attachMedia">
       <template v-if="call.video">
         <video ref="remoteVideoEl" autoplay playsinline class="remote"></video>
+        <div v-if="call.status === 'active' && netState === '已连接' && !remoteHasVideo" class="call-hint">
+          对方未开启摄像头
+        </div>
         <video ref="localVideoEl" autoplay playsinline muted class="local"></video>
+        <div v-if="call.status === 'active' && !camOn" class="call-hint local-hint">摄像头已关闭</div>
       </template>
       <div v-else class="audio-call">
         <span class="avatar big teacher">{{ (call.peer.display_name || '?')[0] }}</span>
         <h3>{{ call.peer.display_name }}</h3>
-        <p class="muted">语音通话中</p>
+        <p class="muted">{{ call.status === 'outgoing' ? '正在呼叫…' : '语音通话中' }}</p>
         <audio ref="remoteAudioEl" autoplay></audio>
       </div>
       <div class="call-status">
-        {{ call.status === 'outgoing' ? '等待对方接听…' : '通话中' }} · {{ call.peer.display_name }}
+        {{ callStatusText }} · {{ call.peer.display_name }}
       </div>
       <div class="call-controls">
         <button class="ctrl" :class="{ off: !micOn }" :title="micOn ? '静音' : '取消静音'" @click="toggleMic">

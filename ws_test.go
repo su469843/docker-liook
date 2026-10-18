@@ -181,6 +181,66 @@ func readMsgNotPresence(t *testing.T, ws *websocket.Conn, timeout time.Duration)
 	}
 }
 
+// wsReader 后台持续读取连接，用于「一段时间内不应收到消息」这类断言：
+// gorilla 的读超时会让连接不可用，所以不能在主 goroutine 上直接读。
+type wsReader struct {
+	ch chan serverMsg
+}
+
+func startWSReader(ws *websocket.Conn) *wsReader {
+	r := &wsReader{ch: make(chan serverMsg, 256)}
+	go func() {
+		defer close(r.ch)
+		for {
+			var m serverMsg
+			if err := ws.ReadJSON(&m); err != nil {
+				return
+			}
+			r.ch <- m
+		}
+	}()
+	return r
+}
+
+func (r *wsReader) next(t *testing.T, timeout time.Duration) serverMsg {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case m, ok := <-r.ch:
+			if !ok {
+				t.Fatal("连接已断开，读不到消息")
+			}
+			if m.Type == "presence" {
+				continue
+			}
+			return m
+		case <-deadline:
+			t.Fatalf("等待消息超时（%s）", timeout)
+			return serverMsg{}
+		}
+	}
+}
+
+func (r *wsReader) none(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case m, ok := <-r.ch:
+			if !ok {
+				return
+			}
+			if m.Type == "presence" {
+				continue
+			}
+			t.Fatalf("不应收到消息，却收到 %s（%+v）", m.Type, m)
+		case <-deadline:
+			return
+		}
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	_, handler := newTestAPI(t)
 	srv := httptest.NewServer(handler)
@@ -525,6 +585,47 @@ func TestEndToEnd(t *testing.T) {
 	if endMsg.Type != "call.end" {
 		t.Fatal("老师应收到挂断通知")
 	}
+
+	// ---------- 通话断线宽限：信令抖动 / 多标签页不再误挂断 ----------
+	oldGrace := callEndGrace
+	callEndGrace = 300 * time.Millisecond
+	defer func() { callEndGrace = oldGrace }()
+	tr := startWSReader(wst) // 之后 wst 只由后台 reader 读取
+
+	// 老师呼叫 student1（服务端随即把双方标记为通话中）
+	wst.WriteJSON(wsMsg{Type: "call.offer", To: student1.ID, SDP: offer, Video: true})
+	if mo := readMsgNotPresence(t, wss, 3*time.Second); mo.Type != "call.offer" || !mo.Video {
+		t.Fatalf("student1 应收到视频通话邀请: %s", mo.Type)
+	}
+	tr.none(t, 150*time.Millisecond) // offer 不应回传给发起方
+
+	// 1) 同账号第二个连接（多标签页）关闭，不能挂断正在进行的通话
+	dup := dialWS(t, sc1)
+	readMsg(t, dup, 3*time.Second) // presence
+	dup.Close()
+	tr.none(t, 900*time.Millisecond)
+
+	// 2) 掉线后在宽限期内重连，同样不能挂断
+	wss.Close()
+	wss = dialWS(t, sc1)
+	readMsg(t, wss, 3*time.Second) // presence
+	tr.none(t, 900*time.Millisecond)
+
+	// 3) 真正掉线（宽限期内没重连）才通知对端「对方已断线」，并释放占线状态
+	wss.Close()
+	gone := tr.next(t, 3*time.Second)
+	if gone.Type != "call.end" || gone.Message != "对方已断线" {
+		t.Fatalf("断线超时后应收到 call.end/对方已断线，得到 %s %q", gone.Type, gone.Message)
+	}
+	wssRe := dialWS(t, sc1)
+	defer wssRe.Close()
+	readMsg(t, wssRe, 3*time.Second) // presence
+	wst.WriteJSON(wsMsg{Type: "call.offer", To: student1.ID, SDP: offer})
+	if mo := readMsgNotPresence(t, wssRe, 3*time.Second); mo.Type != "call.offer" {
+		t.Fatalf("通话结束后应能重新呼叫，得到 %s", mo.Type)
+	}
+	tr.none(t, 200*time.Millisecond)
+	wst.WriteJSON(wsMsg{Type: "call.end", To: student1.ID}) // 收尾：释放占线
 
 	// ---------- 私聊历史 / 未读 ----------
 	var hist []Message

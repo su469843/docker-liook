@@ -60,36 +60,66 @@ type client struct {
 type Hub struct {
 	api     *API
 	mu      sync.Mutex
-	clients map[int64]*client
-	busy    map[int64]int64 // userID → 正在通话的对方 ID（0=空闲）
+	clients map[int64]map[*client]struct{} // 一个账号允许多条连接（多个标签页 / 重连切换）
+	busy    map[int64]int64                // userID → 正在通话的对方 ID（0=空闲）
 }
 
 func newHub(api *API) *Hub {
-	return &Hub{api: api, clients: map[int64]*client{}, busy: map[int64]int64{}}
+	return &Hub{api: api, clients: map[int64]map[*client]struct{}{}, busy: map[int64]int64{}}
 }
 
 func (h *Hub) add(c *client) {
 	h.mu.Lock()
-	h.clients[c.user.ID] = c
+	set := h.clients[c.user.ID]
+	if set == nil {
+		set = map[*client]struct{}{}
+		h.clients[c.user.ID] = set
+	}
+	set[c] = struct{}{}
 	h.mu.Unlock()
 	h.broadcastPresence()
 }
 
+// callEndGrace 通话断线宽限期：信令连接短暂抖动（切网络、刷新页面）时先不挂断，
+// 等用户重新连上再继续，避免「莫名挂断」。
+var callEndGrace = 5 * time.Second
+
 func (h *Hub) remove(c *client) {
 	h.mu.Lock()
-	if cur, ok := h.clients[c.user.ID]; ok && cur == c {
-		delete(h.clients, c.user.ID)
+	set := h.clients[c.user.ID]
+	_, existed := set[c]
+	if existed {
+		delete(set, c)
+		if len(set) == 0 {
+			delete(h.clients, c.user.ID)
+		}
 	}
+	anyLeft := len(set) > 0
 	peer := h.busy[c.user.ID]
-	delete(h.busy, c.user.ID)
-	if peer > 0 {
-		delete(h.busy, peer)
-	}
 	h.mu.Unlock()
-	// 通知通话对方挂断
-	if peer > 0 {
-		h.sendTo(peer, serverMsg{Type: "call.end", FromID: c.user.ID, Message: "对方已断线"})
+
+	// 该账号还有其它连接在线（多个标签页 / 重连后的新连接）时，关闭旧连接不影响通话，
+	// 否则「打开第二个标签页/刷新一下」就会把正在进行的通话挂掉。
+	if !existed || anyLeft || peer <= 0 {
+		h.broadcastPresence()
+		return
 	}
+	uid := c.user.ID
+	time.AfterFunc(callEndGrace, func() {
+		h.mu.Lock()
+		back := len(h.clients[uid]) > 0
+		stillPeer := h.busy[uid]
+		ended := !back && stillPeer == peer
+		if ended {
+			delete(h.busy, uid)
+			delete(h.busy, peer)
+		}
+		h.mu.Unlock()
+		if ended {
+			// 宽限期内没有重连，才通知对方挂断
+			h.sendTo(peer, serverMsg{Type: "call.end", FromID: uid, Message: "对方已断线"})
+		}
+	})
 	h.broadcastPresence()
 }
 
@@ -103,33 +133,39 @@ func (h *Hub) onlineIDs() []int64 {
 	return ids
 }
 
+// sendTo 把消息推给该账号的所有连接（多个标签页都能收到）。
 func (h *Hub) sendTo(uid int64, v any) bool {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return false
 	}
 	h.mu.Lock()
-	c := h.clients[uid]
+	targets := make([]*client, 0, len(h.clients[uid]))
+	for c := range h.clients[uid] {
+		targets = append(targets, c)
+	}
 	h.mu.Unlock()
-	if c == nil {
-		return false
+	sent := false
+	for _, c := range targets {
+		select {
+		case c.send <- b:
+			sent = true
+		default:
+		}
 	}
-	select {
-	case c.send <- b:
-		return true
-	default:
-		return false
-	}
+	return sent
 }
 
 func (h *Hub) broadcastPresence() {
 	ids := h.onlineIDs()
 	b, _ := json.Marshal(serverMsg{Type: "presence", IDs: ids})
 	h.mu.Lock()
-	for _, c := range h.clients {
-		select {
-		case c.send <- b:
-		default:
+	for _, set := range h.clients {
+		for c := range set {
+			select {
+			case c.send <- b:
+			default:
+			}
 		}
 	}
 	h.mu.Unlock()
@@ -330,14 +366,14 @@ func (h *Hub) handleCall(c *client, m *wsMsg) {
 		return
 	}
 	h.mu.Lock()
-	target := h.clients[m.To]
+	onlineTarget := len(h.clients[m.To]) > 0
 	busyTarget := h.busy[m.To]
 	busyMe := h.busy[c.user.ID]
 	h.mu.Unlock()
 
 	switch m.Type {
 	case "call.offer":
-		if target == nil {
+		if !onlineTarget {
 			h.sendTo(c.user.ID, serverMsg{Type: "call.busy", FromID: m.To, Message: "对方不在线"})
 			return
 		}

@@ -17,7 +17,7 @@
 - 👥 **多用户与角色**：管理员管用户 / 注册策略 / 全部课程；老师管自己的课；学员选课上课
 - 🔐 **会话安全**：登录态用 HttpOnly + SameSite Cookie（HMAC 签名），非 GET 请求校验 Origin 防 CSRF，登录失败限流
 - ▶️ hls.js 播放，经后端代理存储，天然免 CORS
-- 📞 **1 对 1 语音/视频通话**：WebRTC + WebSocket 信令，可选 TURN 中继，通话忙线自动提示
+- 📞 **1 对 1 语音/视频通话**：WebRTC + WebSocket 信令，可选 TURN 中继，通话忙线自动提示；摄像头不可用自动降级语音，信令短暂断线/多标签页不会掉线
 
 ## 👥 角色与权限
 
@@ -139,6 +139,16 @@ docker compose down && sudo rm -f ./data/coursehub.db* && docker compose up -d
 - **音视频通话必须在安全上下文可用**：浏览器只在 `https://` 或 `localhost` 下允许访问摄像头/麦克风。公网使用通话功能请配 HTTPS，并把 `COOKIE_SECURE=true`。
 - 用 Nginx/Caddy 反代时，除了 `/api`、`/hls`、`/files`，还要透传 WebSocket `/ws`（Nginx 需要 `proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`）。
 - 跨网络通话建议自建 TURN（如 coturn），配置 `TURN_URL` / `TURN_USER` / `TURN_PASS`；否则双方都在对称 NAT 下可能连不通。
+
+### 通话排障速查
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| 点「接听」后提示权限被拒 | 浏览器地址栏允许摄像头/麦克风；http 访问时根本拿不到设备（改用 https / localhost） |
+| 接通后对方黑屏、没声音，但对方能看到自己 | 已修复（媒体流挂载时机）；升级前端后强制刷新一次（`Ctrl+F5`），入口页已改为 `no-cache` |
+| 画面一直「连接中…」然后失败 | NAT 穿透失败，配 TURN；企业网络禁用 UDP 时也需 TURN（TURN over TCP 443） |
+| 通话中突然挂断 | 信令断线有 5 秒宽限，短暂切网/刷新不会掉线；多标签页也不会互相踢掉 |
+| 没有摄像头也能用 | 摄像头不可用时自动降级为语音通话，不会整通失败 |
 
 ## 💻 本地开发
 

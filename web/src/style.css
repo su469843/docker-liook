@@ -473,6 +473,18 @@ table.table tr:hover td { background: #fcfdfd; }
 .ctrl.hangup { background: var(--danger); }
 .audio-call { display: flex; flex-direction: column; align-items: center; gap: 12px; color: #fff; }
 .audio-call h3 { font-size: 22px; }
+/* 通话中提示（对方未开摄像头 / 本地采集异常等） */
+.call-hint {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  color: #fff; background: rgba(0, 0, 0, .55); border: 1px solid rgba(255, 255, 255, .18);
+  padding: 12px 22px; border-radius: 14px; font-size: 15px; letter-spacing: .02em;
+  display: flex; align-items: center; gap: 8px;
+}
+.call-hint.local-hint {
+  left: auto; right: 20px; top: 20px; transform: none;
+  width: 200px; max-height: 26vh; padding: 8px 12px; font-size: 13px;
+  justify-content: center; border-radius: 12px;
+}
 
 /* ================= 登录页 ================= */
 .login-page { min-height: 100vh; display: grid; grid-template-columns: 1.1fr 1fr; background: #fff; }
