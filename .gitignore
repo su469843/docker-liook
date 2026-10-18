@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+
+# 构建产物
+web/dist/
+web/public/ffmpeg/
+dist/
+course-hub
+*.exe
+
+# 运行期数据
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+
+# 本地配置
+.env
+.env.local
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

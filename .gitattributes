@@ -1,0 +1,12 @@
+# 统一换行符，避免 Windows 上改过的脚本在 Linux 里跑不了
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.ps1 text eol=crlf
+
+# 二进制
+*.wasm binary
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary

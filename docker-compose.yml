@@ -1,0 +1,70 @@
+# CourseHub 一键部署
+#
+# 两种用法（二选一）：
+#   1) 在服务器上直接构建：  docker compose up -d --build
+#   2) 拉取镜像仓库里的镜像：IMAGE=ghcr.io/你的用户名/course-hub:latest docker compose pull
+#                            IMAGE=ghcr.io/你的用户名/course-hub:latest docker compose up -d
+#
+# 配置写在同目录的 .env 里（参考 .env.example），compose 会自动读取。
+
+services:
+  course-hub:
+    build: .
+    image: ${IMAGE:-course-hub:latest}
+    container_name: course-hub
+    restart: unless-stopped
+    # 用 tini 做 1 号进程，正确处理信号（优雅停机 / docker stop 不会被拖 10 秒）
+    init: true
+    stop_grace_period: 15s
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      TZ: Asia/Shanghai
+      # 管理员登录密码（首次启动创建 admin 时使用，务必修改！）
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      # 会话签名密钥（留空则自动生成并持久化到 /data/.jwt_secret；多实例部署必须显式指定同一个值）
+      JWT_SECRET: ${JWT_SECRET:-}
+      # 是否允许学员自助注册
+      ALLOW_REGISTER: ${ALLOW_REGISTER:-true}
+      # 全站 HTTPS 部署时设为 true
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # 存储后端：local | s3 | webdav
+      STORAGE_TYPE: ${STORAGE_TYPE:-local}
+      STORAGE_LOCAL_DIR: /data
+      # S3 / MinIO 配置（STORAGE_TYPE=s3 时生效）
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      # WebDAV 配置（STORAGE_TYPE=webdav 时生效）
+      WEBDAV_URL: ${WEBDAV_URL:-}
+      WEBDAV_USERNAME: ${WEBDAV_USERNAME:-}
+      WEBDAV_PASSWORD: ${WEBDAV_PASSWORD:-}
+      # 音视频通话 TURN 服务器（可选，公网部署建议配置）
+      TURN_URL: ${TURN_URL:-}
+      TURN_USER: ${TURN_USER:-}
+      TURN_PASS: ${TURN_PASS:-}
+    volumes:
+      # 数据库 + 上传的视频/聊天图片都放这里，备份目录即可
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 需要对象存储时可以一起启动 MinIO，然后把 STORAGE_TYPE 改成 s3：
+  # minio:
+  #   image: minio/minio:latest
+  #   command: server /data --console-address ":9001"
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9000:9000"
+  #     - "9001:9001"
+  #   environment:
+  #     MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+  #     MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+  #   volumes:
+  #     - ./minio-data:/data
