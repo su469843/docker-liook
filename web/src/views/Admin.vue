@@ -10,7 +10,11 @@ import Icon from '../components/Icon.vue'
 const tab = ref('users')
 const users = ref([])
 const courses = ref([])
-const settings = ref({ site_name: '课程中心', register_mode: 'open', org_invite_code: '' })
+const settings = ref({
+  site_name: '课程中心', register_mode: 'open', org_invite_code: '',
+  storage_type: '', s3_endpoint: '', s3_bucket: '', s3_access_key: '', s3_secret_key: '', s3_use_ssl: false,
+  webdav_url: '', webdav_username: '', webdav_password: ''
+})
 const loading = ref(true)
 
 const teachers = computed(() => users.value.filter((u) => u.role === 'teacher'))
@@ -131,6 +135,50 @@ function copyOrgCode() {
   toastOk('机构邀请码已复制')
 }
 
+// ---------------- 存储设置 ----------------
+const savingStorage = ref(false)
+const testingStorage = ref(false)
+
+function storagePayload() {
+  const s = settings.value
+  return {
+    storage_type: s.storage_type || '',
+    s3_endpoint: s.s3_endpoint || '',
+    s3_bucket: s.s3_bucket || '',
+    s3_access_key: s.s3_access_key || '',
+    s3_secret_key: s.s3_secret_key || '',
+    s3_use_ssl: !!s.s3_use_ssl,
+    webdav_url: s.webdav_url || '',
+    webdav_username: s.webdav_username || '',
+    webdav_password: s.webdav_password || ''
+  }
+}
+
+async function saveStorage() {
+  savingStorage.value = true
+  try {
+    settings.value = await api('/api/settings', { method: 'PUT', json: storagePayload() })
+    toastOk('存储设置已保存，新上传的文件会写入该后端')
+    await loadAll()
+  } catch (e) {
+    toastErr(e)
+  } finally {
+    savingStorage.value = false
+  }
+}
+
+async function testStorage() {
+  testingStorage.value = true
+  try {
+    const r = await api('/api/settings/storage/test', { method: 'POST', json: storagePayload() })
+    toastOk(r.message || '连接正常')
+  } catch (e) {
+    toastErr(e)
+  } finally {
+    testingStorage.value = false
+  }
+}
+
 // ---------------- 课程管理 ----------------
 async function togglePublish(c) {
   const to = !c.published
@@ -167,7 +215,7 @@ async function assignTeacher(c, ev) {
 
     <div class="tabs">
       <button class="tab" :class="{ active: tab === 'users' }" @click="tab = 'users'">用户管理</button>
-      <button class="tab" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">注册设置</button>
+      <button class="tab" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">站点设置</button>
       <button class="tab" :class="{ active: tab === 'courses' }" @click="tab = 'courses'">课程管理</button>
     </div>
 
@@ -221,7 +269,7 @@ async function assignTeacher(c, ev) {
       </p>
     </template>
 
-    <!-- 注册设置 -->
+    <!-- 站点设置 -->
     <template v-else-if="tab === 'settings'">
       <div class="card mb" style="max-width:860px">
         <div class="panel-title">站点信息</div>
@@ -265,6 +313,73 @@ async function assignTeacher(c, ev) {
         <button class="btn primary mt" :disabled="savingSettings" @click="saveSettings">
           {{ savingSettings ? '保存中…' : '保存设置' }}
         </button>
+      </div>
+
+      <div class="card" style="max-width:860px">
+        <div class="panel-title">文件存储</div>
+        <p class="muted small" style="margin:0 0 14px">
+          视频源文件、HLS 分片、图片和文档都会写到这个存储后端。留空「跟随环境变量」时使用服务器上的本地目录
+          （Docker 里是挂载的 <code>/data</code>）。也可以接到自建 MinIO / S3 或 WebDAV（坚果云、群晖等），省服务器磁盘。
+        </p>
+        <div class="field" style="max-width:300px">
+          <label>存储后端</label>
+          <select v-model="settings.storage_type" class="select">
+            <option value="">跟随环境变量（默认本地目录）</option>
+            <option value="local">本地目录</option>
+            <option value="s3">S3 / MinIO（对象存储）</option>
+            <option value="webdav">WebDAV</option>
+          </select>
+        </div>
+
+        <template v-if="settings.storage_type === 's3'">
+          <div class="form-grid">
+            <div class="field">
+              <label>Endpoint *</label>
+              <input v-model="settings.s3_endpoint" class="input" placeholder="例如 minio.example.com:9000" />
+            </div>
+            <div class="field">
+              <label>Bucket *</label>
+              <input v-model="settings.s3_bucket" class="input" placeholder="例如 coursehub" />
+            </div>
+            <div class="field">
+              <label>Access Key *</label>
+              <input v-model="settings.s3_access_key" class="input" />
+            </div>
+            <div class="field">
+              <label>Secret Key *</label>
+              <input v-model="settings.s3_secret_key" class="input" type="password" />
+            </div>
+          </div>
+          <label class="row" style="gap:6px;cursor:pointer;margin-bottom:12px">
+            <input v-model="settings.s3_use_ssl" type="checkbox" /> 使用 HTTPS（S3_USE_SSL）
+          </label>
+        </template>
+
+        <template v-else-if="settings.storage_type === 'webdav'">
+          <div class="field">
+            <label>WebDAV 地址 *</label>
+            <input v-model="settings.webdav_url" class="input" placeholder="例如 https://dav.example.com/coursehub" />
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>用户名</label>
+              <input v-model="settings.webdav_username" class="input" />
+            </div>
+            <div class="field">
+              <label>密码</label>
+              <input v-model="settings.webdav_password" class="input" type="password" />
+            </div>
+          </div>
+        </template>
+
+        <div class="row mt">
+          <button class="btn" :disabled="testingStorage" @click="testStorage">
+            {{ testingStorage ? '测试中…' : '测试连接' }}
+          </button>
+          <button class="btn primary" :disabled="savingStorage" @click="saveStorage">
+            {{ savingStorage ? '保存中…' : '保存存储设置' }}
+          </button>
+        </div>
       </div>
     </template>
 

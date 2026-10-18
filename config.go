@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -34,6 +35,11 @@ type Config struct {
 	TurnURL       string // 可选 TURN 服务器（视频通话 NAT 中继），逗号分隔多个 url
 	TurnUser      string
 	TurnPass      string
+
+	FFmpegPath   string // 服务端转码 HLS 用的 ffmpeg 可执行文件（默认 ffmpeg）
+	MaxUploadMB  int    // 单个视频上传上限（MB）
+	SignTTLMin   int    // 播放/下载签名 URL 有效期（分钟）
+	TranscodeMax int    // 同时转码的任务数
 }
 
 func LoadConfig() *Config {
@@ -57,6 +63,10 @@ func LoadConfig() *Config {
 		TurnURL:       getenv("TURN_URL", ""),
 		TurnUser:      getenv("TURN_USER", ""),
 		TurnPass:      getenv("TURN_PASS", ""),
+		FFmpegPath:    getenv("FFMPEG_PATH", "ffmpeg"),
+		MaxUploadMB:   getenvInt("MAX_UPLOAD_MB", 4096),
+		SignTTLMin:    getenvInt("SIGN_TTL_MINUTES", 120),
+		TranscodeMax:  getenvInt("TRANSCODE_CONCURRENCY", 2),
 	}
 	// 注册模式优先级：REGISTER_MODE > ALLOW_REGISTER（旧变量）> open
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("REGISTER_MODE"))) {
@@ -110,6 +120,15 @@ func loadOrCreateSecret(dataDir string) string {
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return def
+}
+
+func getenvInt(k string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
 	}
 	return def
 }

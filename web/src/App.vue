@@ -37,7 +37,7 @@ onMounted(async () => {
   if (store.user) bindWS()
   off = onWS((m) => {
     if (m.type === 'presence') store.online = m.ids || []
-    else if (m.type === 'chat.new' || m.type === 'group.new') refreshUnread()
+    else if (m.type === 'chat.new' || m.type === 'group.new' || m.type === 'unread') refreshUnread()
   })
   window.addEventListener('click', closeMenu)
 })
@@ -74,7 +74,7 @@ async function logout() {
         </RouterLink>
 
         <nav class="nav-links">
-          <RouterLink to="/" class="nav-link" :class="{ active: route.path === '/' }">首页</RouterLink>
+          <RouterLink to="/" class="nav-link" :class="{ active: route.path === '/' || route.path.startsWith('/course/') }">课程市场</RouterLink>
           <RouterLink v-if="store.user?.role === 'student'" to="/my" class="nav-link">我的课程</RouterLink>
           <RouterLink v-if="isStaff" to="/studio" class="nav-link">老师工作台</RouterLink>
           <RouterLink v-if="isAdmin" to="/admin" class="nav-link">管理后台</RouterLink>

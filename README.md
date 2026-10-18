@@ -6,12 +6,12 @@
 
 - 🧑‍🏫 **老师教学中心**：老师建课 → 上传课时（视频 / 图文 / 文档）→ 一键上架到课程市场，或只把邀请码发给自己的学员
 - 🛒 **课程市场**：老师把课程「上架市场」后，学员可以自己在市场里选课加入；没上架的课程只能凭邀请码加入
-- 🎬 **浏览器端切片**：上传时在浏览器里用 ffmpeg.wasm 把视频切成 HLS（m3u8 + ts 分片），服务器只负责存文件和播放
+- 🎬 **服务端转码 HLS**：源视频直传/分片上传到存储后端，服务器用 ffmpeg 切成 HLS 并 **AES-128 加密**；播放地址是 **带有效期的签名 URL**，过期/外链盗用直接失效（没装 ffmpeg 时自动退化为 MP4 + HTTP Range 渐进播放）
 - 📝 **三种课时类型**：视频课时（HLS 播放）、图文课时（富文本编辑器，支持插图）、文档课时（PDF / Word / PPT / 文本，在线预览或下载）
 - 💬 **课程群聊 + 私聊**：加入课程后自动获得「任课老师私聊」与「课程群聊」，群里可以**引用某个课时的某个播放时间点**，点一下直接跳到那一段
 - 🎨 **手绘矢量图标**：全站图标与聊天表情都是内置的手绘 SVG（不依赖 emoji 字体，任何系统上显示一致、不发虚）
 - 🔐 **注册策略可选**：后台三档 —— 开放注册 / 必须填机构邀请码 / 完全关闭（只能由管理员建号）
-- 💾 **存储后端可配置**：本地目录 / S3（MinIO、AWS 等 S3 兼容存储）/ WebDAV，通过环境变量一键切换
+- 💾 **存储后端可切换**：本地目录 / S3（MinIO、AWS 等 S3 兼容存储）/ WebDAV，后台「站点设置 → 文件存储」里填地址一键测试并切换，也可用环境变量配置
 - 📦 **Docker 一键部署**：前端打包产物嵌入 Go 二进制，单容器启动，无外部依赖
 - 🗃️ **元数据存 SQLite**（纯 Go 驱动，无 CGO），随数据目录自动建库，旧版 `videos` 数据自动迁移
 - 👥 **多用户与角色**：管理员管用户 / 注册策略 / 全部课程；老师管自己的课；学员选课上课
@@ -186,19 +186,35 @@ go run .
 | `STORAGE_TYPE` | 存储后端：`local` / `s3` / `webdav` | `local` |
 | `STORAGE_LOCAL_DIR` | 本地存储目录（SQLite 也在这里） | `./data`（容器内 `/data`） |
 | `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_USE_SSL` | S3(MinIO 兼容) 配置 | - |
-| `WEBDAV_URL` / `WEBDAV_USERNAME` / `WEBDAV_PASSWORD` | WebDAV 配置 | - |
+| `WEBDAV_URL` / `WEBDAV_USERNAME` / `WEBDAV_PASSWORD` | WebDAV 配置（也可在后台「站点设置 → 文件存储」里改） | - |
+| `FFMPEG_PATH` | 服务端转 HLS 用的 ffmpeg（Docker 镜像内置 `/usr/bin/ffmpeg`；未安装则自动退化为 MP4 播放） | `ffmpeg` |
+| `MAX_UPLOAD_MB` | 单个视频上传上限（MB），超过请走分片上传 | `4096` |
+| `SIGN_TTL_MINUTES` | 播放/下载签名 URL 有效期（分钟） | `120` |
+| `TRANSCODE_CONCURRENCY` | 同时转码任务数（按 CPU 核数调整） | `2` |
 | `TURN_URL` / `TURN_USER` / `TURN_PASS` | 可选 TURN 服务器（多个用逗号分隔） | - |
 
 > `SITE_NAME` / `REGISTER_MODE` / `ORG_INVITE_CODE` 只在数据库**首次初始化**时生效，之后以「后台管理 → 注册设置」里的值为准（避免重启把后台设置覆盖掉）。
 
-## 🎞️ 视频切片说明
+## 🎞️ 视频处理链路（服务端转码 + 加密 + 签名）
 
-| 模式 | 说明 | 适用 |
-|---|---|---|
-| ⚡ 快速切片（默认） | `-c copy` 不转码直接切，几秒到几十秒 | 源视频是 H.264/AAC（绝大多数 mp4） |
-| 🔄 兼容转码 | 转成 H.264 再切，速度慢 | 源编码特殊、快速切片失败时 |
+```
+老师选择文件
+  ├─ 直接上传（默认）：POST /api/lessons/:id/video   ← 一次请求，XHR 带进度
+  └─ 分片上传（可选）：/upload/init → 每片 16MB 逐片 PUT → /upload/:id/done
+        ↓ 源文件落到存储后端 src/{lessonId}/source.*
+   服务端 ffmpeg → HLS（10s 分片，AES-128 加密，key 单独存放）
+        ↓ 产物 hls/{lessonId}/index.m3u8 + seg*.ts + key.bin
+   课时 status: uploading → processing → ready
+        ↓ 前端拿到的播放地址是签名 URL
+   GET /hls/:id/index.m3u8?e=<过期时间>&s=<HMAC>  →  下发时把每个分片/密钥 URI 也签进 m3u8
+```
 
-⚠️ **浏览器内存限制**：ffmpeg.wasm 运行在浏览器内存里，单个视频文件建议 **不超过 2GB**。超大的视频请先在本地压缩，或用快速切片模式。文档课时最大 200MB。
+- **有效期**：签名默认 2 小时（`SIGN_TTL_MINUTES`），过期后分片/密钥请求 401，页面刷新会重新签发；地址被复制到站外也很快失效。
+- **加密**：HLS 用 AES-128（`#EXT-X-KEY`），密钥文件只存在存储后端，由后端按签名地址下发，播放器（hls.js / Safari）自动解密。
+- **没有 ffmpeg 时**：自动退化为「源文件 + HTTP Range」渐进播放，功能不受影响（只有加密/切片没有）。
+- **大文件**：默认直传适合 ≤1GB；更大的文件在弹窗里选「分片上传」，单片失败可重传，服务端按片落盘再合并。
+- **磁盘/带宽**：源文件与切片都会进存储后端；接 S3 / WebDAV 后本机只留数据库，省空间。
+- 文档课时最大 200MB，聊天图片 ≤10MB。
 
 ## 📡 API 一览（供二次开发）
 
@@ -232,9 +248,15 @@ POST   /api/courses/:id/lessons       {title,chapter?,kind:video|rich|doc,conten
 GET    /api/lessons/:id               课时详情（视频/图文/文档）
 PUT    /api/lessons/:id               修改课时（标题/章节/图文内容）
 DELETE /api/lessons/:id               删除课时
-POST   /api/lessons/:id/complete      {size,duration} 视频切片上传完成
-PUT    /api/lessons/:id/m3u8          原始 m3u8 内容
-PUT    /api/lessons/:id/segments/:ts  分片内容
+POST   /api/lessons/:id/complete      {size,duration} 兼容旧接口
+POST   /api/lessons/:id/video?name=x.mp4  一次性直传源视频（body=文件字节流）
+POST   /api/lessons/:id/upload/init     {file_name,size} → {upload_id,chunk_size,chunks}
+PUT    /api/lessons/:id/upload/:uid/:i  上传第 i 片（16MB，可重传）
+GET    /api/lessons/:id/upload/:uid     已收到的分片列表（断点续传）
+POST   /api/lessons/:id/upload/:uid/done  合并分片 → 开始转码
+GET    /api/lessons/:id/video/status    转码状态 {status,duration,video_mode,video_url}
+GET    /api/lessons/:id/stream?e=&s=    源文件播放（Range 渐进，签名或 Cookie 鉴权）
+GET    /hls/:id/index.m3u8?e=&s=        加密 HLS 播放列表（下发时给分片/密钥追加签名）
 POST   /api/lessons/:id/doc           multipart 上传文档（≤200MB）
 GET    /api/lessons/:id/file          下载/预览文档
 GET    /hls/:id/:file                 HLS 播放代理（m3u8 与分片同路径）

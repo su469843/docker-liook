@@ -109,9 +109,12 @@ function onSeek({ lesson_id, time }) {
         <template v-if="current">
           <template v-if="current.kind === 'video'">
             <VideoPlayer v-if="current.status === 'ready'" ref="player" :lesson-id="current.id"
+              :src="current.video_url" :mode="current.video_mode" :poster="current.poster || ''"
               :start-at="startAt" @time="(t) => (currentTime = t)" @error="toastErr" />
             <div v-else class="learn-content">
-              <div class="alert">该视频课时还在上传中，请稍后再来观看。</div>
+              <div class="alert" v-if="current.status === 'processing'">视频正在转码切片，通常几十秒到几分钟，稍后刷新即可播放。</div>
+              <div class="alert error" v-else-if="current.status === 'failed'">视频转码失败，请联系老师重新上传。</div>
+              <div class="alert" v-else>该视频课时还在上传中，请稍后再来观看。</div>
             </div>
             <div class="learn-content-tab">
               <div class="row" style="justify-content:space-between;align-items:flex-start">

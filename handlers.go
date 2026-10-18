@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -13,14 +13,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type API struct {
 	cfg     *Config
-	st      Storage
+	st      Storage // 环境变量配置的默认后端
 	db      *Store
 	hub     *Hub
 	limiter *loginLimiter
+
+	// 后台可切换的存储后端（设置里配了 storage_type 时覆盖默认后端）
+	stMu     sync.Mutex
+	stCustom Storage
+	stSig    string
 }
 
 func (a *API) routes(mux *http.ServeMux) {
@@ -58,13 +64,19 @@ func (a *API) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/lessons/{id}", a.requireUser(a.handleUpdateLesson))
 	mux.HandleFunc("DELETE /api/lessons/{id}", a.requireUser(a.handleDeleteLesson))
 	mux.HandleFunc("POST /api/lessons/{id}/complete", a.requireUser(a.handleCompleteLesson))
-	mux.HandleFunc("PUT /api/lessons/{id}/m3u8", a.requireUser(a.handlePutM3U8))
-	mux.HandleFunc("PUT /api/lessons/{id}/segments/{name}", a.requireUser(a.handlePutSegment))
+	// 视频上传：默认一次直传；大文件可走分片断点续传（/upload/*）
+	mux.HandleFunc("POST /api/lessons/{id}/video", a.requireUser(a.handleVideoUploadDirect))
+	mux.HandleFunc("POST /api/lessons/{id}/upload/init", a.requireUser(a.handleVideoUploadInit))
+	mux.HandleFunc("PUT /api/lessons/{id}/upload/{uploadID}/{index}", a.requireUser(a.handleVideoUploadChunk))
+	mux.HandleFunc("GET /api/lessons/{id}/upload/{uploadID}", a.requireUser(a.handleVideoUploadStatus))
+	mux.HandleFunc("POST /api/lessons/{id}/upload/{uploadID}/done", a.requireUser(a.handleVideoUploadDone))
+	mux.HandleFunc("GET /api/lessons/{id}/video/status", a.requireUser(a.handleVideoStatus))
 	mux.HandleFunc("POST /api/lessons/{id}/doc", a.requireUser(a.handleUploadDoc))
 	mux.HandleFunc("GET /api/lessons/{id}/file", a.requireUser(a.handleLessonFile))
+	mux.HandleFunc("GET /api/lessons/{id}/stream", a.handleLessonStream)
 
-	// 媒体（Cookie 鉴权 + 课程访问控制）
-	mux.HandleFunc("GET /hls/{id}/{file}", a.requireUser(a.handleHLS))
+	// 媒体（签名 URL 或 Cookie 鉴权 + 课程访问控制 + Range）
+	mux.HandleFunc("GET /hls/{id}/{file}", a.handleHLS)
 	mux.HandleFunc("GET /files/", a.requireUser(a.handleServeFile))
 	mux.HandleFunc("POST /api/upload/image", a.requireUser(a.handleImageUpload))
 	mux.HandleFunc("POST /api/chat/upload", a.requireUser(a.handleImageUpload))
@@ -72,6 +84,7 @@ func (a *API) routes(mux *http.ServeMux) {
 	// 聊天 / 群聊 / 在线
 	mux.HandleFunc("GET /api/contacts", a.requireUser(a.handleContacts))
 	mux.HandleFunc("GET /api/chat/{peer}", a.requireUser(a.handleChatHistory))
+	mux.HandleFunc("POST /api/chat/{peer}/read", a.requireUser(a.handleChatRead))
 	mux.HandleFunc("GET /api/groups", a.requireUser(a.handleMyGroups))
 	mux.HandleFunc("GET /api/groups/{id}/messages", a.requireUser(a.handleGroupHistory))
 	mux.HandleFunc("POST /api/groups/{id}/read", a.requireUser(a.handleGroupRead))
@@ -81,6 +94,7 @@ func (a *API) routes(mux *http.ServeMux) {
 	// 站点设置（管理员）
 	mux.HandleFunc("GET /api/settings", a.requireRole(a.handleGetSettings, "admin"))
 	mux.HandleFunc("PUT /api/settings", a.requireRole(a.handleUpdateSettings, "admin"))
+	mux.HandleFunc("POST /api/settings/storage/test", a.requireRole(a.handleStorageTest, "admin"))
 	mux.HandleFunc("POST /api/settings/invite", a.requireRole(a.handleNewOrgInvite, "admin"))
 
 	// 用户管理（管理员）
@@ -251,15 +265,47 @@ func (a *API) handleListCourses(w http.ResponseWriter, r *http.Request, u *User)
 	writeJSON(w, http.StatusOK, courses)
 }
 
+// 默认封面配色白名单：前端按「渐变底色 + 课程标题 + 手绘图标」现场渲染封面图，
+// 老师建课时选一个颜色即可，不必再找图。
+var coverColors = map[string]bool{
+	"green": true, "blue": true, "indigo": true, "orange": true,
+	"pink": true, "teal": true, "slate": true, "gold": true,
+}
+
+func validCoverColor(v string) (string, bool) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "", true
+	}
+	return v, coverColors[v]
+}
+
+// 封面底色（按课程 ID 派生，未选颜色时用）
+var coverColorOrder = []string{"green", "blue", "orange", "indigo", "teal", "pink", "slate", "gold"}
+
+func defaultCoverColor(id int64) string {
+	n := id % int64(len(coverColorOrder))
+	if n < 0 {
+		n += int64(len(coverColorOrder))
+	}
+	return coverColorOrder[n]
+}
+
 func (a *API) handleCreateCourse(w http.ResponseWriter, r *http.Request, u *User) {
 	var req struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 		Category    string `json:"category"`
+		CoverColor  string `json:"cover_color"`
 		TeacherID   int64  `json:"teacher_id"` // 仅管理员创建时指定任课老师
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Title) == "" {
 		writeErr(w, 400, "课程名称不能为空")
+		return
+	}
+	color, ok := validCoverColor(req.CoverColor)
+	if !ok {
+		writeErr(w, 400, "封面颜色无效")
 		return
 	}
 	teacherID := u.ID
@@ -272,7 +318,7 @@ func (a *API) handleCreateCourse(w http.ResponseWriter, r *http.Request, u *User
 		teacherID = req.TeacherID
 	}
 	id, err := a.db.CreateCourse(teacherID, trimTitle(req.Title),
-		strings.TrimSpace(req.Description), trimTitle(req.Category), genInviteCode())
+		strings.TrimSpace(req.Description), trimTitle(req.Category), color, genInviteCode())
 	if err != nil {
 		writeErr(w, 500, "创建课程失败: "+err.Error())
 		return
@@ -321,9 +367,10 @@ func (a *API) handleUpdateCourse(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Category    string `json:"category"`
+		Title       string  `json:"title"`
+		Description string  `json:"description"`
+		Category    string  `json:"category"`
+		CoverColor  *string `json:"cover_color"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "参数错误")
@@ -337,7 +384,16 @@ func (a *API) handleUpdateCourse(w http.ResponseWriter, r *http.Request, u *User
 		writeErr(w, 400, "课程名称过长")
 		return
 	}
-	if err := a.db.UpdateCourse(id, title, strings.TrimSpace(req.Description), trimTitle(req.Category)); err != nil {
+	color := c.CoverColor
+	if req.CoverColor != nil {
+		nc, ok := validCoverColor(*req.CoverColor)
+		if !ok {
+			writeErr(w, 400, "封面颜色无效")
+			return
+		}
+		color = nc
+	}
+	if err := a.db.UpdateCourse(id, title, strings.TrimSpace(req.Description), trimTitle(req.Category), color); err != nil {
 		writeErr(w, 500, "保存失败")
 		return
 	}
@@ -388,11 +444,11 @@ func (a *API) handleDeleteCourse(w http.ResponseWriter, r *http.Request, u *User
 	}
 	for _, lid := range ids {
 		sid := strconv.FormatInt(lid, 10)
-		a.st.DeletePrefix(r.Context(), "hls/"+sid)
-		a.st.DeletePrefix(r.Context(), "doc/"+sid)
+		a.stg().DeletePrefix(r.Context(), "hls/"+sid)
+		a.stg().DeletePrefix(r.Context(), "doc/"+sid)
 	}
 	if c.Cover != "" {
-		a.st.Delete(r.Context(), c.Cover)
+		a.stg().Delete(r.Context(), c.Cover)
 	}
 	if err := a.db.DeleteCourse(id); err != nil {
 		writeErr(w, 500, "删除课程失败: "+err.Error())
@@ -509,7 +565,7 @@ func (a *API) handleUploadCover(w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	key := "cover/" + strconv.FormatInt(id, 10) + ext
-	if err := a.st.Put(r.Context(), key, data); err != nil {
+	if err := a.stg().Put(r.Context(), key, data); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
 	}
@@ -531,7 +587,7 @@ func (a *API) handleCourseCover(w http.ResponseWriter, r *http.Request, u *User)
 		writeErr(w, 404, "没有封面")
 		return
 	}
-	rc, err := a.st.Get(r.Context(), c.Cover)
+	rc, err := a.stg().Get(r.Context(), c.Cover)
 	if err != nil {
 		writeErr(w, 404, "没有封面")
 		return
@@ -640,7 +696,7 @@ func (a *API) handleListLessons(w http.ResponseWriter, r *http.Request, u *User)
 			lessons[i].Size = 0
 		}
 	}
-	writeJSON(w, http.StatusOK, lessons)
+	a.writeLessons(w, lessons)
 }
 
 func (a *API) handleCreateLesson(w http.ResponseWriter, r *http.Request, u *User) {
@@ -685,7 +741,7 @@ func (a *API) handleCreateLesson(w http.ResponseWriter, r *http.Request, u *User
 		writeErr(w, 500, "课时回查失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, l)
+	a.writeLesson(w, l)
 }
 
 func (a *API) handleGetLesson(w http.ResponseWriter, r *http.Request, u *User) {
@@ -703,7 +759,7 @@ func (a *API) handleGetLesson(w http.ResponseWriter, r *http.Request, u *User) {
 		writeErr(w, http.StatusForbidden, "无权访问该课时")
 		return
 	}
-	writeJSON(w, http.StatusOK, l)
+	a.writeLesson(w, l)
 }
 
 func (a *API) handleUpdateLesson(w http.ResponseWriter, r *http.Request, u *User) {
@@ -755,7 +811,7 @@ func (a *API) handleUpdateLesson(w http.ResponseWriter, r *http.Request, u *User
 		}
 	}
 	nl, _ := a.db.GetLesson(id)
-	writeJSON(w, http.StatusOK, nl)
+	a.writeLesson(w, nl)
 }
 
 func (a *API) handleDeleteLesson(w http.ResponseWriter, r *http.Request, u *User) {
@@ -774,8 +830,9 @@ func (a *API) handleDeleteLesson(w http.ResponseWriter, r *http.Request, u *User
 		return
 	}
 	sid := strconv.FormatInt(id, 10)
-	a.st.DeletePrefix(r.Context(), "hls/"+sid)
-	a.st.DeletePrefix(r.Context(), "doc/"+sid)
+	a.stg().DeletePrefix(r.Context(), "hls/"+sid)
+	a.stg().DeletePrefix(r.Context(), "doc/"+sid)
+	a.stg().DeletePrefix(r.Context(), "src/"+sid)
 	if err := a.db.DeleteLesson(id); err != nil {
 		writeErr(w, 500, "删除失败: "+err.Error())
 		return
@@ -805,67 +862,6 @@ func (a *API) handleCompleteLesson(w http.ResponseWriter, r *http.Request, u *Us
 	json.NewDecoder(r.Body).Decode(&req) // 参数可省略
 	if err := a.db.CompleteLesson(id, req.Size, req.Duration); err != nil {
 		writeErr(w, 500, "完成失败: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// ---------------- 视频上传 ----------------
-
-func (a *API) handlePutM3U8(w http.ResponseWriter, r *http.Request, u *User) {
-	id, ok := pathID(r)
-	if !ok {
-		writeErr(w, 400, "无效的课时 ID")
-		return
-	}
-	l, err := a.db.GetLesson(id)
-	if err != nil || l.Kind != "video" {
-		writeErr(w, 404, "课时不存在")
-		return
-	}
-	if _, ok := a.canManageCourse(u, l.CourseID); !ok {
-		writeErr(w, http.StatusForbidden, "无权上传")
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
-	if err != nil || len(body) == 0 || !strings.Contains(string(body), "#EXTM3U") {
-		writeErr(w, 400, "m3u8 内容无效")
-		return
-	}
-	if err := a.st.Put(r.Context(), hlsKey(id, "index.m3u8"), body); err != nil {
-		writeErr(w, 500, "保存 m3u8 失败: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (a *API) handlePutSegment(w http.ResponseWriter, r *http.Request, u *User) {
-	id, ok := pathID(r)
-	if !ok {
-		writeErr(w, 400, "无效的课时 ID")
-		return
-	}
-	l, err := a.db.GetLesson(id)
-	if err != nil || l.Kind != "video" {
-		writeErr(w, 404, "课时不存在")
-		return
-	}
-	if _, ok := a.canManageCourse(u, l.CourseID); !ok {
-		writeErr(w, http.StatusForbidden, "无权上传")
-		return
-	}
-	name := r.PathValue("name")
-	if !nameRe.MatchString(name) {
-		writeErr(w, 400, "分片文件名无效")
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256<<20))
-	if err != nil || len(body) == 0 {
-		writeErr(w, 400, "分片内容为空或超出大小限制")
-		return
-	}
-	if err := a.st.Put(r.Context(), hlsKey(id, name), body); err != nil {
-		writeErr(w, 500, "保存分片失败: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -933,7 +929,7 @@ func (a *API) handleUploadDoc(w http.ResponseWriter, r *http.Request, u *User) {
 	}
 	sid := strconv.FormatInt(id, 10)
 	key := "doc/" + sid + "/" + "doc" + ext
-	if err := a.st.Put(r.Context(), key, data); err != nil {
+	if err := a.stg().PutStream(r.Context(), key, bytes.NewReader(data), int64(len(data))); err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
 	}
@@ -942,7 +938,7 @@ func (a *API) handleUploadDoc(w http.ResponseWriter, r *http.Request, u *User) {
 		return
 	}
 	nl, _ := a.db.GetLesson(id)
-	writeJSON(w, http.StatusOK, nl)
+	a.writeLesson(w, nl)
 }
 
 func (a *API) handleLessonFile(w http.ResponseWriter, r *http.Request, u *User) {
@@ -956,16 +952,12 @@ func (a *API) handleLessonFile(w http.ResponseWriter, r *http.Request, u *User) 
 		writeErr(w, 404, "文件不存在")
 		return
 	}
-	if _, ok := a.canAccessCourse(u, l.CourseID); !ok {
-		writeErr(w, http.StatusForbidden, "无权下载该文件")
-		return
+	if !a.checkSign(r, "/api/lessons/"+strconv.FormatInt(id, 10)+"/file") {
+		if _, ok := a.canAccessCourse(u, l.CourseID); !ok {
+			writeErr(w, http.StatusForbidden, "无权下载该文件")
+			return
+		}
 	}
-	rc, err := a.st.Get(r.Context(), l.Content)
-	if err != nil {
-		writeErr(w, 404, "文件不存在")
-		return
-	}
-	defer rc.Close()
 	ctype := l.Mime
 	if ctype == "" {
 		ctype = "application/octet-stream"
@@ -978,47 +970,8 @@ func (a *API) handleLessonFile(w http.ResponseWriter, r *http.Request, u *User) 
 	if l.Filename == "" {
 		fn = "file" + path.Ext(l.Content)
 	}
-	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Content-Disposition", disp+`; filename*=UTF-8''`+fn)
 	w.Header().Set("Cache-Control", "private, max-age=600")
-	if _, err := io.Copy(w, rc); err != nil {
-		log.Printf("文件传输中断: lesson=%d err=%v", id, err)
-	}
-}
-
-// ---------------- HLS 播放代理（Cookie 鉴权 + 课程访问控制） ----------------
-
-func (a *API) handleHLS(w http.ResponseWriter, r *http.Request, u *User) {
-	id, ok := pathID(r)
-	if !ok {
-		writeErr(w, 400, "无效的课时 ID")
-		return
-	}
-	l, err := a.db.GetLesson(id)
-	if err != nil || l.Kind != "video" {
-		writeErr(w, 404, "课时不存在")
-		return
-	}
-	if _, ok := a.canAccessCourse(u, l.CourseID); !ok {
-		writeErr(w, http.StatusForbidden, "无权观看该课时")
-		return
-	}
-	file := r.PathValue("file")
-	if !nameRe.MatchString(file) {
-		writeErr(w, 400, "文件名无效")
-		return
-	}
-	rc, err := a.st.Get(r.Context(), hlsKey(id, file))
-	if err != nil {
-		writeErr(w, 404, "文件不存在")
-		return
-	}
-	defer rc.Close()
-	w.Header().Set("Content-Type", contentTypeOf(file))
-	w.Header().Set("Cache-Control", "private, max-age=86400")
-	if _, err := io.Copy(w, rc); err != nil {
-		log.Printf("HLS 代理传输中断: id=%d file=%s err=%v", id, file, err)
-	}
+	a.serveStorageRange(w, r, l.Content, ctype, disp+`; filename*=UTF-8''`+fn)
 }
 
 // ---------------- 图片（聊天 / 图文） ----------------
@@ -1054,7 +1007,7 @@ func (a *API) handleImageUpload(w http.ResponseWriter, r *http.Request, u *User)
 	buf := make([]byte, 16)
 	rand.Read(buf)
 	key := "img/" + hexStr(buf) + ext
-	if err := a.st.Put(r.Context(), key, data); err != nil {
+	if err := a.stg().Put(r.Context(), key, data); err != nil {
 		writeErr(w, 500, "图片保存失败: "+err.Error())
 		return
 	}
@@ -1069,7 +1022,7 @@ func (a *API) handleServeFile(w http.ResponseWriter, r *http.Request, u *User) {
 		writeErr(w, 404, "文件不存在")
 		return
 	}
-	rc, err := a.st.Get(r.Context(), key)
+	rc, err := a.stg().Get(r.Context(), key)
 	if err != nil {
 		writeErr(w, 404, "文件不存在")
 		return

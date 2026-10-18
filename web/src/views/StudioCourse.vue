@@ -1,13 +1,13 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createFFmpeg, fetchFile } from '@ffmpeg/ffmpeg'
-import { api, postForm, rawPut } from '../api'
+import { api, postForm } from '../api'
 import { store } from '../store'
-import { coverGradient, courseArt, fmtDur, fmtSize, kindIconName, kindLabel } from '../format'
+import { COVER_COLORS, fmtDur, fmtSize, kindIconName, kindLabel } from '../format'
 import { toastOk, toastErr, confirmDialog } from '../ui'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
+import CoverArt from '../components/CoverArt.vue'
 import RichEditor from '../components/RichEditor.vue'
 
 const route = useRoute()
@@ -56,14 +56,29 @@ async function load() {
     setting.value = {
       title: course.value.title,
       description: course.value.description,
-      category: course.value.category
+      category: course.value.category,
+      cover_color: course.value.cover_color || ''
     }
   } catch (e) {
     err.value = e.message
   }
   loading.value = false
+  schedulePoll()
 }
 onMounted(load)
+onBeforeUnmount(() => clearTimeout(pollTimer))
+
+// 转码中的课时自动刷新状态（服务端 ffmpeg 切完就能播）
+function schedulePoll() {
+  clearTimeout(pollTimer)
+  if (!lessons.value.some((l) => l.kind === 'video' && (l.status === 'processing' || l.status === 'uploading'))) return
+  pollTimer = setTimeout(async () => {
+    try {
+      lessons.value = (await api(`/api/courses/${course.value.id}/lessons`)) || []
+    } catch {}
+    schedulePoll()
+  }, 3000)
+}
 
 // ---------------- 课时弹窗 ----------------
 const showLesson = ref(false)
@@ -71,15 +86,14 @@ const lessonKind = ref('video')
 const editing = ref(null) // 正在编辑的课时（null=新建）
 const lessonForm = ref({ title: '', chapter: '', content: '' })
 const videoFile = ref(null)
-const videoMode = ref('copy')
+const uploadMode = ref('direct')
 const docFile = ref(null)
 const uploading = ref(false)
 const uploadStage = ref('idle')
 const uploadPct = ref(0)
 const uploadPctMax = ref(1)
 const uploadText = ref('')
-
-const ffmpeg = createFFmpeg({ corePath: '/ffmpeg/ffmpeg-core.js', log: false })
+let pollTimer = null
 
 function openAdd(kind) {
   editing.value = null
@@ -87,7 +101,7 @@ function openAdd(kind) {
   lessonForm.value = { title: '', chapter: '', content: '' }
   videoFile.value = null
   docFile.value = null
-  videoMode.value = 'copy'
+  uploadMode.value = 'direct'
   uploadStage.value = 'idle'
   uploadPct.value = 0
   uploadText.value = ''
@@ -156,65 +170,83 @@ async function saveLessonMeta() {
   }
 }
 
-// 浏览器内切片 + 分片上传
+// 视频上传：源文件直接进存储，服务端 ffmpeg 转 HLS（AES-128 加密后播放走签名地址）
 async function uploadVideo() {
   if (!checkBase()) return
   if (!videoFile.value) { toastErr('请选择视频文件'); return }
+  const file = videoFile.value
   uploading.value = true
-  uploadStage.value = 'loading'
   uploadPct.value = 0
-  uploadText.value = '正在加载切片引擎（首次约 24MB，请稍候）…'
+  uploadText.value = '正在创建课时…'
   try {
     const created = await createLesson('video')
-    if (!ffmpeg.isLoaded()) await ffmpeg.load()
-
-    uploadStage.value = 'slice'
-    uploadText.value = '正在浏览器内切片（视频越大耗时越久，请保持页面打开）…'
-    const ext = (videoFile.value.name.match(/\.[^.]+$/) || ['.mp4'])[0]
-    const inputName = 'input' + ext
-    ffmpeg.FS('writeFile', inputName, await fetchFile(videoFile.value))
-    const args = videoMode.value === 'copy'
-      ? ['-i', inputName, '-c', 'copy', '-hls_time', '10', '-hls_list_size', '0', '-f', 'hls', 'out.m3u8']
-      : ['-i', inputName, '-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-hls_time', '10', '-hls_list_size', '0', '-f', 'hls', 'out.m3u8']
-    await ffmpeg.run(...args)
-
-    const names = ffmpeg.FS('readdir', '/').filter((n) => n === 'out.m3u8' || /^out\d+\.ts$/.test(n))
-    if (!names.includes('out.m3u8')) {
-      throw new Error('切片失败：未生成 m3u8。可能是视频编码不受支持，请改用「兼容转码」模式重试')
-    }
-    const segs = names.filter((n) => n.endsWith('.ts'))
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-
     uploadStage.value = 'upload'
-    uploadPctMax.value = segs.length + 1
-    uploadPct.value = 0
-    await rawPut(`/api/lessons/${created.id}/m3u8`, ffmpeg.FS('readFile', 'out.m3u8'), 'application/vnd.apple.mpegurl')
-    uploadPct.value = 1
-    for (const n of segs) {
-      uploadText.value = `正在上传分片 ${uploadPct.value}/${uploadPctMax.value}（${n}）`
-      await rawPut(`/api/lessons/${created.id}/segments/${n}`, ffmpeg.FS('readFile', n), 'video/mp2t')
-      uploadPct.value++
-    }
-    await api(`/api/lessons/${created.id}/complete`, { method: 'POST', json: { size: videoFile.value.size } })
-
-    try { ffmpeg.FS('unlink', inputName) } catch {}
-    for (const n of segs) { try { ffmpeg.FS('unlink', n) } catch {} }
-    try { ffmpeg.FS('unlink', 'out.m3u8') } catch {}
-
+    uploadPctMax.value = file.size
+    if (uploadMode.value === 'chunked') await uploadChunked(created.id, file)
+    else await uploadDirect(created.id, file)
     uploadStage.value = 'done'
-    uploadText.value = '视频上传完成'
-    toastOk('视频课时已上传')
+    uploadText.value = '上传完成，服务端正在转码切片'
+    toastOk('视频已上传，转码完成后即可播放')
     setTimeout(async () => {
       showLesson.value = false
-      uploading.value = false
       uploadStage.value = 'idle'
+      uploading.value = false
       await load()
-    }, 600)
+    }, 400)
   } catch (e) {
     toastErr(e)
     uploadStage.value = 'idle'
     uploading.value = false
   }
+}
+
+// 一次直传（默认）：XHR 带上传进度
+function uploadDirect(lessonId, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/lessons/${lessonId}/video?name=${encodeURIComponent(file.name)}`)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return
+      uploadPct.value = e.loaded
+      uploadText.value = `正在上传 ${fmtSize(e.loaded)} / ${fmtSize(e.total)}`
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) return resolve()
+      let msg = `上传失败（${xhr.status}）`
+      try { msg = JSON.parse(xhr.responseText).error || msg } catch {}
+      reject(new Error(msg))
+    }
+    xhr.onerror = () => reject(new Error('网络中断，请重新上传'))
+    xhr.send(file)
+  })
+}
+
+// 分片上传：16MB 一片，失败可重传该片；大文件（如 1GB）更稳
+async function uploadChunked(lessonId, file) {
+  const init = await api(`/api/lessons/${lessonId}/upload/init`, {
+    method: 'POST',
+    json: { file_name: file.name, size: file.size }
+  })
+  const { upload_id, chunk_size, chunks } = init
+  uploadPctMax.value = chunks
+  for (let i = 0; i < chunks; i++) {
+    uploadText.value = `正在上传分片 ${i + 1}/${chunks}（${fmtSize(Math.min(i * chunk_size, file.size))} / ${fmtSize(file.size)}）`
+    const blob = file.slice(i * chunk_size, Math.min((i + 1) * chunk_size, file.size))
+    const res = await fetch(`/api/lessons/${lessonId}/upload/${upload_id}/${i}`, {
+      method: 'PUT',
+      body: blob,
+      credentials: 'same-origin'
+    })
+    if (!res.ok) {
+      let msg = `分片 ${i + 1} 上传失败`
+      try { msg = (await res.json()).error || msg } catch {}
+      throw new Error(msg)
+    }
+    uploadPct.value = i + 1
+  }
+  uploadText.value = '正在合并分片…'
+  await api(`/api/lessons/${lessonId}/upload/${upload_id}/done`, { method: 'POST' })
 }
 
 async function uploadDoc() {
@@ -250,7 +282,7 @@ async function removeLesson(l) {
 }
 
 // ---------------- 课程设置 ----------------
-const setting = ref({ title: '', description: '', category: '' })
+const setting = ref({ title: '', description: '', category: '', cover_color: '' })
 const savingSetting = ref(false)
 const coverInput = ref(null)
 
@@ -265,6 +297,26 @@ async function saveSetting() {
     toastErr(e)
   } finally {
     savingSetting.value = false
+  }
+}
+
+// 选默认封面配色（渐变底 + 课程标题，自动生成封面）
+async function pickCoverColor(color) {
+  setting.value.cover_color = color
+  try {
+    const c = await api(`/api/courses/${course.value.id}`, {
+      method: 'PUT',
+      json: {
+        title: setting.value.title || course.value.title,
+        description: setting.value.description || '',
+        category: setting.value.category || '',
+        cover_color: color
+      }
+    })
+    course.value = { ...course.value, ...c }
+    toastOk('封面配色已更新')
+  } catch (e) {
+    toastErr(e)
   }
 }
 
@@ -387,7 +439,9 @@ async function removeCourse() {
                   <span v-if="l.duration">{{ fmtDur(l.duration) }}</span>
                   <span v-if="l.size">{{ fmtSize(l.size) }}</span>
                   <span v-if="l.kind === 'doc' && l.filename" class="row" style="gap:4px"><Icon name="doc" :size="13" /> {{ l.filename }}</span>
-                  <span v-if="l.status !== 'ready'" style="color:var(--warn)">未完成上传</span>
+                  <span v-if="l.status === 'processing'" style="color:var(--brand-700)">转码中…</span>
+                  <span v-else-if="l.status === 'failed'" style="color:var(--danger)">转码失败，请删除后重新上传</span>
+                  <span v-else-if="l.status === 'uploading'" style="color:var(--warn)">未上传完成</span>
                 </div>
               </div>
               <div class="row">
@@ -449,15 +503,23 @@ async function removeCourse() {
         </div>
 
         <div class="card mb">
-          <div class="panel-title">封面图</div>
+          <div class="panel-title">封面</div>
           <div class="row" style="align-items:flex-start">
-            <div class="manage-cover" :style="!coverUrl ? { background: coverGradient(course.id), width: '200px', height: '118px' } : { width: '200px', height: '118px' }">
+            <div class="manage-cover" style="width:200px;height:118px">
               <img v-if="coverUrl" :src="coverUrl" alt="封面" />
-              <div v-else class="cover-fallback"><Icon :name="courseArt(course.id)" :size="42" /></div>
+              <CoverArt v-else :course="{ ...course, cover_color: setting.cover_color }" :size="34" />
             </div>
-            <div>
-              <button class="btn" @click="coverInput.click()">上传封面</button>
-              <p class="muted small" style="margin:8px 0 0">建议 16:9 比例，png/jpg，≤5MB</p>
+            <div style="flex:1">
+              <button class="btn" @click="coverInput.click()">上传自定义封面</button>
+              <p class="muted small" style="margin:8px 0 12px">建议 16:9 比例，png/jpg，≤5MB；不上传就用下面的默认配色封面。</p>
+              <div class="cover-colors">
+                <button v-for="c in COVER_COLORS" :key="c.id" type="button" class="cover-color"
+                  :class="{ active: setting.cover_color === c.id }" :title="c.name"
+                  :style="{ background: `linear-gradient(135deg, ${c.from}, ${c.to})` }"
+                  @click="pickCoverColor(c.id)"></button>
+                <button type="button" class="cover-color auto" :class="{ active: !setting.cover_color }"
+                  title="按课程自动配色" @click="pickCoverColor('')">自动</button>
+              </div>
             </div>
           </div>
           <input ref="coverInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden @change="uploadCover" />
@@ -527,24 +589,26 @@ async function removeCourse() {
             <span v-if="videoFile" class="muted small">{{ videoFile.name }} · {{ fmtSize(videoFile.size) }}</span>
           </div>
           <div class="field">
-            <label>切片模式</label>
+            <label>上传方式</label>
             <div class="row">
               <label class="row" style="gap:6px;cursor:pointer">
-                <input v-model="videoMode" type="radio" value="copy" :disabled="uploading" />
-                <Icon name="spark" :size="14" /> 快速切片（推荐，要求 H.264/AAC）
+                <input v-model="uploadMode" type="radio" value="direct" :disabled="uploading" />
+                <Icon name="upload" :size="14" /> 直接上传（默认，适合 ≤1GB）
               </label>
               <label class="row" style="gap:6px;cursor:pointer">
-                <input v-model="videoMode" type="radio" value="transcode" :disabled="uploading" />
-                <Icon name="refresh" :size="14" /> 兼容转码（慢但兼容性好）
+                <input v-model="uploadMode" type="radio" value="chunked" :disabled="uploading" />
+                <Icon name="layers" :size="14" /> 分片上传（大文件更稳，可重传单片）
               </label>
             </div>
+            <p class="muted small" style="margin:8px 0 0">
+              上传后由服务端转码切成 HLS 并加密，学员播放走带有效期的签名地址；转码期间可先做别的事，完成后自动可播。
+            </p>
           </div>
           <div v-if="uploadStage !== 'idle'" class="card" style="background:#fafbfc">
             <p style="margin:0 0 10px">{{ uploadText }}</p>
-            <div v-if="uploadStage === 'upload' || uploadStage === 'done'" class="progress">
-              <i :style="{ width: Math.round((uploadPct / uploadPctMax) * 100) + '%' }"></i>
+            <div class="progress">
+              <i :style="{ width: Math.min(100, Math.round((uploadPct / Math.max(1, uploadPctMax)) * 100)) + '%' }"></i>
             </div>
-            <div v-else class="row"><span class="spinner"></span><span class="muted small">处理中，请勿关闭页面…</span></div>
           </div>
         </template>
       </template>
@@ -572,7 +636,7 @@ async function removeCourse() {
       <template #foot>
         <button class="btn" :disabled="uploading" @click="showLesson = false">取消</button>
         <button v-if="lessonKind === 'video' && !editing" class="btn primary" :disabled="uploading" @click="uploadVideo">
-          {{ uploading ? '上传中…' : '开始切片并上传' }}
+          {{ uploading ? '上传中…' : '上传视频' }}
         </button>
         <button v-else-if="lessonKind === 'doc' && !editing" class="btn primary" :disabled="uploading" @click="uploadDoc">
           {{ uploading ? '上传中…' : '上传文档' }}

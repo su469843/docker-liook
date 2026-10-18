@@ -28,6 +28,17 @@ type Settings struct {
 	SiteName      string `json:"site_name"`
 	RegisterMode  string `json:"register_mode"`   // open | invite | closed
 	OrgInviteCode string `json:"org_invite_code"` // invite 模式下注册需要
+
+	// 存储后端（空 = 用环境变量 STORAGE_TYPE 等配置）
+	StorageType string `json:"storage_type"` // ""(跟随环境变量) | local | s3 | webdav
+	S3Endpoint  string `json:"s3_endpoint"`
+	S3Bucket    string `json:"s3_bucket"`
+	S3AccessKey string `json:"s3_access_key"`
+	S3SecretKey string `json:"s3_secret_key"`
+	S3UseSSL    bool   `json:"s3_use_ssl"`
+	WebDAVURL   string `json:"webdav_url"`
+	WebDAVUser  string `json:"webdav_username"`
+	WebDAVPass  string `json:"webdav_password"`
 }
 
 type Course struct {
@@ -37,7 +48,8 @@ type Course struct {
 	Title        string `json:"title"`
 	Description  string `json:"description"`
 	Category     string `json:"category"`
-	Cover        string `json:"cover"` // 存储 key，空表示无封面
+	Cover        string `json:"cover"`       // 存储 key，空表示无封面
+	CoverColor   string `json:"cover_color"` // 默认封面配色（green/blue/indigo/orange/pink/teal/slate/gold），空=按 ID 派生
 	Published    bool   `json:"published"`
 	InviteCode   string `json:"invite_code,omitempty"`
 	CreatedAt    string `json:"created_at"`
@@ -63,6 +75,9 @@ type Lesson struct {
 	Mime      string  `json:"mime"`
 	Position  int64   `json:"position"`
 	CreatedAt string  `json:"created_at"`
+
+	VideoMode string `json:"video_mode,omitempty"` // hls | mp4（后端计算，不入库）
+	VideoURL  string `json:"video_url,omitempty"`  // 带有效期的签名播放地址
 }
 
 type Message struct {
@@ -129,6 +144,15 @@ CREATE TABLE IF NOT EXISTS settings(
   site_name TEXT NOT NULL DEFAULT '课程中心',
   register_mode TEXT NOT NULL DEFAULT 'open',
   org_invite_code TEXT NOT NULL DEFAULT '',
+  storage_type TEXT NOT NULL DEFAULT '',
+  s3_endpoint TEXT NOT NULL DEFAULT '',
+  s3_bucket TEXT NOT NULL DEFAULT '',
+  s3_access_key TEXT NOT NULL DEFAULT '',
+  s3_secret_key TEXT NOT NULL DEFAULT '',
+  s3_use_ssl INTEGER NOT NULL DEFAULT 0,
+  webdav_url TEXT NOT NULL DEFAULT '',
+  webdav_username TEXT NOT NULL DEFAULT '',
+  webdav_password TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS courses(
@@ -138,6 +162,7 @@ CREATE TABLE IF NOT EXISTS courses(
   description TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT '',
   cover TEXT NOT NULL DEFAULT '',
+  cover_color TEXT NOT NULL DEFAULT '',
   published INTEGER NOT NULL DEFAULT 0,
   invite_code TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -210,9 +235,25 @@ CREATE TABLE IF NOT EXISTS group_reads(
 	db.Exec(`ALTER TABLE courses ADD COLUMN invite_code TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE courses ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE courses ADD COLUMN cover TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE courses ADD COLUMN cover_color TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE courses ADD COLUMN published INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE courses ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`UPDATE courses SET updated_at = created_at WHERE updated_at = ''`)
+
+	// 存储后端设置（老库补齐列）
+	for _, q := range []string{
+		`ALTER TABLE settings ADD COLUMN storage_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN s3_endpoint TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN s3_bucket TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN s3_access_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN s3_secret_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN s3_use_ssl INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE settings ADD COLUMN webdav_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN webdav_username TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE settings ADD COLUMN webdav_password TEXT NOT NULL DEFAULT ''`,
+	} {
+		db.Exec(q)
+	}
 
 	s := &Store{db: db}
 	// 旧版本库升级：videos → lessons（保留原 id，HLS 存储目录因此不变）
@@ -246,20 +287,33 @@ func (s *Store) InitSettings(siteName, mode, code string) error {
 
 func (s *Store) GetSettings() *Settings {
 	st := &Settings{SiteName: "课程中心", RegisterMode: "open"}
-	row := s.db.QueryRow(`SELECT site_name, register_mode, org_invite_code FROM settings WHERE id = 1`)
-	if err := row.Scan(&st.SiteName, &st.RegisterMode, &st.OrgInviteCode); err != nil {
+	row := s.db.QueryRow(`SELECT site_name, register_mode, org_invite_code,
+		storage_type, s3_endpoint, s3_bucket, s3_access_key, s3_secret_key, s3_use_ssl,
+		webdav_url, webdav_username, webdav_password FROM settings WHERE id = 1`)
+	if err := row.Scan(&st.SiteName, &st.RegisterMode, &st.OrgInviteCode,
+		&st.StorageType, &st.S3Endpoint, &st.S3Bucket, &st.S3AccessKey, &st.S3SecretKey, &st.S3UseSSL,
+		&st.WebDAVURL, &st.WebDAVUser, &st.WebDAVPass); err != nil {
 		return st
 	}
 	return st
 }
 
 func (s *Store) SaveSettings(st *Settings) error {
-	_, err := s.db.Exec(`INSERT INTO settings(id, site_name, register_mode, org_invite_code, updated_at)
-		VALUES(1,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO settings(id, site_name, register_mode, org_invite_code,
+		storage_type, s3_endpoint, s3_bucket, s3_access_key, s3_secret_key, s3_use_ssl,
+		webdav_url, webdav_username, webdav_password, updated_at)
+		VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET site_name = excluded.site_name,
 			register_mode = excluded.register_mode, org_invite_code = excluded.org_invite_code,
+			storage_type = excluded.storage_type, s3_endpoint = excluded.s3_endpoint,
+			s3_bucket = excluded.s3_bucket, s3_access_key = excluded.s3_access_key,
+			s3_secret_key = excluded.s3_secret_key, s3_use_ssl = excluded.s3_use_ssl,
+			webdav_url = excluded.webdav_url, webdav_username = excluded.webdav_username,
+			webdav_password = excluded.webdav_password,
 			updated_at = excluded.updated_at`,
-		st.SiteName, st.RegisterMode, st.OrgInviteCode, now())
+		st.SiteName, st.RegisterMode, st.OrgInviteCode,
+		st.StorageType, st.S3Endpoint, st.S3Bucket, st.S3AccessKey, st.S3SecretKey, st.S3UseSSL,
+		st.WebDAVURL, st.WebDAVUser, st.WebDAVPass, now())
 	return err
 }
 
@@ -332,7 +386,7 @@ func (s *Store) SetUserPassword(id int64, hash string) error {
 // ---------------- 课程 ----------------
 
 const courseCols = `c.id, c.teacher_id, IFNULL(t.display_name, t.username), c.title, c.description,
-	c.category, c.cover, c.published, c.invite_code, c.created_at, c.updated_at`
+	c.category, c.cover, c.cover_color, c.published, c.invite_code, c.created_at, c.updated_at`
 
 const courseSelect = `SELECT ` + courseCols + `,
 	(SELECT COUNT(*) FROM lessons l WHERE l.course_id = c.id),
@@ -342,7 +396,7 @@ const courseSelect = `SELECT ` + courseCols + `,
 func scanCourse(row interface{ Scan(...any) error }) (*Course, error) {
 	var c Course
 	if err := row.Scan(&c.ID, &c.TeacherID, &c.TeacherName, &c.Title, &c.Description,
-		&c.Category, &c.Cover, &c.Published, &c.InviteCode, &c.CreatedAt, &c.UpdatedAt,
+		&c.Category, &c.Cover, &c.CoverColor, &c.Published, &c.InviteCode, &c.CreatedAt, &c.UpdatedAt,
 		&c.LessonCount, &c.StudentCount); err != nil {
 		return nil, err
 	}
@@ -421,19 +475,24 @@ func (s *Store) GetCourseByInviteCode(code string) (*Course, error) {
 	return scanCourse(s.db.QueryRow(courseSelect+` WHERE c.invite_code = ?`, code))
 }
 
-func (s *Store) CreateCourse(teacherID int64, title, description, category, inviteCode string) (int64, error) {
+func (s *Store) CreateCourse(teacherID int64, title, description, category, coverColor, inviteCode string) (int64, error) {
 	t := now()
-	res, err := s.db.Exec(`INSERT INTO courses(teacher_id, title, description, category, invite_code, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?)`, teacherID, title, description, category, inviteCode, t, t)
+	res, err := s.db.Exec(`INSERT INTO courses(teacher_id, title, description, category, cover_color, invite_code, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?)`, teacherID, title, description, category, coverColor, inviteCode, t, t)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func (s *Store) UpdateCourse(id int64, title, description, category string) error {
-	_, err := s.db.Exec(`UPDATE courses SET title = ?, description = ?, category = ?, updated_at = ? WHERE id = ?`,
-		title, description, category, now(), id)
+func (s *Store) UpdateCourse(id int64, title, description, category, coverColor string) error {
+	_, err := s.db.Exec(`UPDATE courses SET title = ?, description = ?, category = ?, cover_color = ?, updated_at = ? WHERE id = ?`,
+		title, description, category, coverColor, now(), id)
+	return err
+}
+
+func (s *Store) SetCourseCoverColor(id int64, color string) error {
+	_, err := s.db.Exec(`UPDATE courses SET cover_color = ?, updated_at = ? WHERE id = ?`, color, now(), id)
 	return err
 }
 
@@ -625,6 +684,18 @@ func (s *Store) SetLessonDoc(id int64, key, filename, mime string, size int64) e
 func (s *Store) CompleteLesson(id int64, size int64, duration float64) error {
 	_, err := s.db.Exec(`UPDATE lessons SET status = 'ready', size = ?, duration = ? WHERE id = ?`,
 		size, duration, id)
+	return err
+}
+
+// SetLessonVideo 视频转码完成：content 指向 m3u8 或源文件
+func (s *Store) SetLessonVideo(id int64, content string, size int64, duration float64) error {
+	_, err := s.db.Exec(`UPDATE lessons SET content = ?, status = 'ready', size = ?, duration = ? WHERE id = ?`,
+		content, size, duration, id)
+	return err
+}
+
+func (s *Store) SetLessonStatus(id int64, status string) error {
+	_, err := s.db.Exec(`UPDATE lessons SET status = ? WHERE id = ?`, status, id)
 	return err
 }
 

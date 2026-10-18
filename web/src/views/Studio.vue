@@ -3,10 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { store } from '../store'
-import { coverGradient, courseArt, fmtDate } from '../format'
+import { COVER_COLORS, fmtDate } from '../format'
 import { toastOk, toastErr, confirmDialog } from '../ui'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
+import CoverArt from '../components/CoverArt.vue'
 
 const router = useRouter()
 const courses = ref([])
@@ -14,7 +15,7 @@ const users = ref([])
 const loading = ref(true)
 const showCreate = ref(false)
 const creating = ref(false)
-const form = ref({ title: '', description: '', category: '', teacher_id: '' })
+const form = ref({ title: '', description: '', category: '', cover_color: '', teacher_id: '' })
 
 const isAdmin = computed(() => store.user?.role === 'admin')
 const teachers = computed(() => users.value.filter((u) => u.role === 'teacher'))
@@ -41,12 +42,17 @@ async function create() {
   if (!form.value.title.trim()) { toastErr('请填写课程名称'); return }
   creating.value = true
   try {
-    const body = { title: form.value.title.trim(), description: form.value.description.trim(), category: form.value.category.trim() }
+    const body = {
+      title: form.value.title.trim(),
+      description: form.value.description.trim(),
+      category: form.value.category.trim(),
+      cover_color: form.value.cover_color || ''
+    }
     if (isAdmin.value && form.value.teacher_id) body.teacher_id = Number(form.value.teacher_id)
     const course = await api('/api/courses', { method: 'POST', json: body })
     toastOk('课程已创建，去添加课时吧')
     showCreate.value = false
-    form.value = { title: '', description: '', category: '', teacher_id: '' }
+    form.value = { title: '', description: '', category: '', cover_color: '', teacher_id: '' }
     router.push('/studio/' + course.id)
   } catch (e) {
     toastErr(e)
@@ -117,9 +123,9 @@ async function remove(c) {
     <div v-if="loading" class="skeleton" style="height:200px"></div>
     <div v-else-if="courses.length" class="manage-list">
       <div v-for="c in courses" :key="c.id" class="manage-item">
-        <div class="manage-cover" :style="!c.cover ? { background: coverGradient(c.id) } : null" @click="router.push('/studio/' + c.id)">
+        <div class="manage-cover" @click="router.push('/studio/' + c.id)">
           <img v-if="c.cover" :src="`/api/courses/${c.id}/cover?v=${encodeURIComponent(c.updated_at || '')}`" :alt="c.title" />
-          <div v-else class="cover-fallback"><Icon :name="courseArt(c.id)" :size="34" /></div>
+          <CoverArt v-else :course="c" compact :size="26" />
         </div>
         <div class="manage-main">
           <div class="row" style="gap:8px">
@@ -169,6 +175,20 @@ async function remove(c) {
             <option value="">归到自己名下</option>
             <option v-for="t in teachers" :key="t.id" :value="t.id">{{ t.display_name }}（{{ t.username }}）</option>
           </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>默认封面底色（不传图也能有好看封面）</label>
+        <div class="cover-colors">
+          <button v-for="c in COVER_COLORS" :key="c.id" type="button" class="cover-color"
+            :class="{ active: form.cover_color === c.id }" :title="c.name"
+            :style="{ background: `linear-gradient(135deg, ${c.from}, ${c.to})` }"
+            @click="form.cover_color = c.id"></button>
+          <button type="button" class="cover-color auto" :class="{ active: !form.cover_color }" title="按课程自动配色"
+            @click="form.cover_color = ''">自动</button>
+        </div>
+        <div class="cover-preview">
+          <CoverArt :course="{ id: 1, title: form.title || '课程标题预览', category: form.category, cover_color: form.cover_color }" :size="34" />
         </div>
       </div>
       <template #foot>

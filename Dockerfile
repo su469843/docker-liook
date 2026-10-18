@@ -40,8 +40,8 @@ LABEL org.opencontainers.image.title="CourseHub" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="MIT"
 
-# ca-certificates: 访问 S3/WebDAV 时校验 HTTPS 证书；tzdata: 日志时间用东八区
-RUN apk add --no-cache ca-certificates tzdata \
+# ca-certificates: 访问 S3/WebDAV 时校验 HTTPS 证书；tzdata: 日志时间用东八区；ffmpeg: 服务端转 HLS 切片
+RUN apk add --no-cache ca-certificates tzdata ffmpeg \
  && addgroup -g 10001 -S app \
  && adduser -u 10001 -S -D -H -G app app \
  && mkdir -p /data \
@@ -52,6 +52,7 @@ COPY --from=build /out/course-hub /usr/local/bin/course-hub
 ENV PORT=8080 \
     STORAGE_TYPE=local \
     STORAGE_LOCAL_DIR=/data \
+    FFMPEG_PATH=/usr/bin/ffmpeg \
     TZ=Asia/Shanghai
 
 WORKDIR /app

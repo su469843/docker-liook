@@ -3,13 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, postForm } from '../api'
 import { onWS, sendWS, wsState } from '../ws'
 import { fmtDur, fmtRel, fmtTime } from '../format'
-import { refreshUnread, store } from '../store'
+import { markChatRead, markGroupRead, refreshUnread, store } from '../store'
 import { toastErr } from '../ui'
 import { STICKERS, plainText, stickerToken } from '../stickers'
 import GroupChat from '../components/GroupChat.vue'
 import Icon from '../components/Icon.vue'
 import Sticker from '../components/Sticker.vue'
 import MessageBody from '../components/MessageBody.vue'
+import ImageLightbox from '../components/ImageLightbox.vue'
 
 // ---------------- 状态 ----------------
 const tab = ref('private')
@@ -20,6 +21,7 @@ const activeGroup = ref(null)
 const messages = ref([])
 const input = ref('')
 const showStickers = ref(false)
+const preview = ref('')
 const listEl = ref(null)
 const fileEl = ref(null)
 const loading = ref(true)
@@ -59,8 +61,8 @@ async function openPrivate(c) {
   c.unread = 0
   showStickers.value = false
   try {
+    // 拉历史时后端会一并标记已读
     messages.value = (await api(`/api/chat/${c.id}`)) || []
-    sendWS({ type: 'chat.read', to: c.id })
   } catch (e) {
     toastErr(e)
   }
@@ -73,7 +75,7 @@ function openGroup(g) {
   activeGroup.value = g
   activeContact.value = null
   g.unread = 0
-  refreshUnread()
+  markGroupRead(g.course_id) // 落库后刷新顶部角标，红点才真的灭
 }
 
 // ---------------- 私聊发送 ----------------
@@ -582,7 +584,7 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
               <span v-if="m.sender_id !== myID" class="avatar sm" :class="activeContact.role">{{ (activeContact.display_name || '?')[0] }}</span>
               <div class="msg-stack">
                 <div class="bubble">
-                  <img v-if="m.type === 'image'" :src="m.content" alt="图片" />
+                  <img v-if="m.type === 'image'" :src="m.content" alt="图片" @click="preview = m.content" />
                   <MessageBody v-else :content="m.content" />
                 </div>
                 <span class="msg-time">{{ fmtTime(m.created_at) }}</span>
@@ -636,6 +638,8 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
     <p v-if="callError" class="alert error" style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:160">
       {{ callError }}
     </p>
+
+    <ImageLightbox v-if="preview" :src="preview" @close="preview = ''" />
 
     <!-- 来电 -->
     <div v-if="call && call.status === 'incoming'" class="call-mask">

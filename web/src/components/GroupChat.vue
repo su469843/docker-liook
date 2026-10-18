@@ -3,12 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, postForm } from '../api'
 import { onWS, sendWS, wsState } from '../ws'
 import { fmtRel, fmtTime, fmtDur } from '../format'
-import { refreshUnread, store } from '../store'
+import { markGroupRead, store } from '../store'
 import { toastErr } from '../ui'
 import { STICKERS, stickerToken } from '../stickers'
 import Icon from './Icon.vue'
 import Sticker from './Sticker.vue'
 import MessageBody from './MessageBody.vue'
+import ImageLightbox from './ImageLightbox.vue'
 
 const props = defineProps({
   courseId: { type: Number, required: true },
@@ -26,6 +27,7 @@ const listEl = ref(null)
 const loading = ref(true)
 const showStickers = ref(false)
 const imgEl = ref(null)
+const preview = ref('')
 const sending = ref(false)
 let off = null
 
@@ -40,12 +42,12 @@ async function load() {
   loading.value = true
   try {
     messages.value = (await api(`/api/groups/${props.courseId}/messages`)) || []
-    sendWS({ type: 'group.read', group: props.courseId })
   } catch (e) {
     toastErr(e)
   }
   loading.value = false
   scrollBottom()
+  markGroupRead(props.courseId) // 打开即已读，红点/角标由后端落库后刷新
 }
 
 function scrollBottom() {
@@ -65,8 +67,7 @@ function onMsg(m) {
   if (m.type === 'group.sent' && m.gmsg) addMessage(m.gmsg)
   if (m.type === 'group.new' && m.gmsg) {
     addMessage(m.gmsg)
-    sendWS({ type: 'group.read', group: props.courseId })
-    refreshUnread()
+    markGroupRead(props.courseId) // 正看着这个群，直接标记已读，别在顶部留红点
   }
 }
 
@@ -142,7 +143,7 @@ watch(() => props.courseId, () => { load() })
         <div class="msg-stack">
           <span v-if="m.sender_id !== myID" class="msg-sender">{{ m.sender_name }}</span>
           <div class="bubble">
-            <img v-if="m.type === 'image'" :src="m.content" alt="图片" />
+            <img v-if="m.type === 'image'" :src="m.content" alt="图片" @click="preview = m.content" />
             <MessageBody v-else :content="m.content" />
             <div v-if="m.ref_lesson_id" class="quote-chip" style="margin-top:6px" @click="jump(m)">
               <Icon name="play" :size="13" /><span class="qt">{{ m.ref_title }}<template v-if="m.ref_time"> · {{ fmtDur(m.ref_time) }}</template></span>
@@ -180,5 +181,7 @@ watch(() => props.courseId, () => { load() })
       </div>
       <input ref="imgEl" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden @change="sendImage" />
     </div>
+
+    <ImageLightbox v-if="preview" :src="preview" @close="preview = ''" />
   </div>
 </template>

@@ -174,38 +174,122 @@ func (a *API) handleGetSettings(w http.ResponseWriter, r *http.Request, u *User)
 	writeJSON(w, http.StatusOK, a.db.GetSettings())
 }
 
+// storageReq 后台存储设置（指针：未传的字段保持原值）
+type storageReq struct {
+	StorageType *string `json:"storage_type"`
+	S3Endpoint  *string `json:"s3_endpoint"`
+	S3Bucket    *string `json:"s3_bucket"`
+	S3AccessKey *string `json:"s3_access_key"`
+	S3SecretKey *string `json:"s3_secret_key"`
+	S3UseSSL    *bool   `json:"s3_use_ssl"`
+	WebDAVURL   *string `json:"webdav_url"`
+	WebDAVUser  *string `json:"webdav_username"`
+	WebDAVPass  *string `json:"webdav_password"`
+}
+
+func (s *storageReq) applyTo(st *Settings) bool {
+	if s.StorageType != nil {
+		v := strings.ToLower(strings.TrimSpace(*s.StorageType))
+		if v != "" && v != "local" && v != "s3" && v != "webdav" {
+			return false
+		}
+		st.StorageType = v
+	}
+	if s.S3Endpoint != nil {
+		st.S3Endpoint = strings.TrimSpace(*s.S3Endpoint)
+	}
+	if s.S3Bucket != nil {
+		st.S3Bucket = strings.TrimSpace(*s.S3Bucket)
+	}
+	if s.S3AccessKey != nil {
+		st.S3AccessKey = strings.TrimSpace(*s.S3AccessKey)
+	}
+	if s.S3SecretKey != nil {
+		st.S3SecretKey = strings.TrimSpace(*s.S3SecretKey)
+	}
+	if s.S3UseSSL != nil {
+		st.S3UseSSL = *s.S3UseSSL
+	}
+	if s.WebDAVURL != nil {
+		st.WebDAVURL = strings.TrimSpace(*s.WebDAVURL)
+	}
+	if s.WebDAVUser != nil {
+		st.WebDAVUser = strings.TrimSpace(*s.WebDAVUser)
+	}
+	if s.WebDAVPass != nil {
+		st.WebDAVPass = *s.WebDAVPass
+	}
+	return true
+}
+
 func (a *API) handleUpdateSettings(w http.ResponseWriter, r *http.Request, u *User) {
 	var req struct {
-		SiteName     string `json:"site_name"`
-		RegisterMode string `json:"register_mode"`
+		SiteName     *string `json:"site_name"`
+		RegisterMode *string `json:"register_mode"`
+		storageReq
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "参数错误")
 		return
 	}
 	st := a.db.GetSettings()
-	if s := strings.TrimSpace(req.SiteName); s != "" {
-		if len([]rune(s)) > 30 {
-			writeErr(w, 400, "站点名称过长（最多 30 字）")
-			return
+	if req.SiteName != nil {
+		if s := strings.TrimSpace(*req.SiteName); s != "" {
+			if len([]rune(s)) > 30 {
+				writeErr(w, 400, "站点名称过长（最多 30 字）")
+				return
+			}
+			st.SiteName = s
 		}
-		st.SiteName = s
 	}
-	if req.RegisterMode != "" {
-		if req.RegisterMode != "open" && req.RegisterMode != "invite" && req.RegisterMode != "closed" {
+	if req.RegisterMode != nil && *req.RegisterMode != "" {
+		m := *req.RegisterMode
+		if m != "open" && m != "invite" && m != "closed" {
 			writeErr(w, 400, "注册模式无效")
 			return
 		}
-		st.RegisterMode = req.RegisterMode
+		st.RegisterMode = m
 	}
 	if st.RegisterMode == "invite" && st.OrgInviteCode == "" {
 		st.OrgInviteCode = genInviteCode()
+	}
+	if !req.storageReq.applyTo(st) {
+		writeErr(w, 400, "存储类型无效")
+		return
 	}
 	if err := a.db.SaveSettings(st); err != nil {
 		writeErr(w, 500, "保存失败")
 		return
 	}
+	// 存储配置变了：下次访问时重建后端
+	a.stMu.Lock()
+	a.stSig = ""
+	a.stMu.Unlock()
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleStorageTest 测试后台填写的存储配置（不保存）
+func (a *API) handleStorageTest(w http.ResponseWriter, r *http.Request, u *User) {
+	var req struct {
+		storageReq
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "参数错误")
+		return
+	}
+	st := a.db.GetSettings()
+	if !req.storageReq.applyTo(st) {
+		writeErr(w, 400, "存储类型无效")
+		return
+	}
+	cfg := configFromSettings(a.cfg, st)
+	if err := testStorage(cfg); err != nil {
+		writeErr(w, 400, "连接失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "storage_type": cfg.StorageType, "message": "连接正常，可读可写",
+	})
 }
 
 func (a *API) handleNewOrgInvite(w http.ResponseWriter, r *http.Request, u *User) {

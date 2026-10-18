@@ -6,8 +6,7 @@
   "packageManager": "pnpm@10.28.2",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "postinstall": "node -e \"const fs=require('fs');fs.mkdirSync('public/ffmpeg',{recursive:true});for(const f of ['ffmpeg-core.js','ffmpeg-core.wasm'])fs.copyFileSync('node_modules/@ffmpeg/core/dist/'+f,'public/ffmpeg/'+f)\""
+    "build": "vite build"
   },
   "dependencies": {
     "@ffmpeg/core": "0.11.0",

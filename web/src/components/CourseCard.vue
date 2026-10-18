@@ -1,8 +1,7 @@
 <script setup>
 import { computed } from 'vue'
-import { courseArt, coverGradient } from '../format'
 import { store } from '../store'
-import Icon from './Icon.vue'
+import CoverArt from './CoverArt.vue'
 
 const props = defineProps({
   course: { type: Object, required: true },
@@ -15,14 +14,13 @@ const coverUrl = computed(() => {
   return `/api/courses/${props.course.id}/cover?v=${encodeURIComponent(props.course.updated_at || props.course.id)}`
 })
 const isStudent = computed(() => store.user?.role === 'student')
-const art = computed(() => courseArt(props.course.id))
 </script>
 
 <template>
   <RouterLink :to="'/course/' + course.id" class="course-card card-hover">
-    <div class="course-cover" :style="!coverUrl ? { background: coverGradient(course.id) } : null">
+    <div class="course-cover">
       <img v-if="coverUrl" :src="coverUrl" :alt="course.title" loading="lazy" />
-      <div v-else class="cover-fallback"><Icon :name="art" :size="62" /></div>
+      <CoverArt v-else :course="course" :size="46" />
       <span v-if="course.enrolled && (isStudent || showBuy)" class="tag joined">{{ joinedLabel }}</span>
       <span v-else-if="course.published" class="tag">市场公开</span>
     </div>

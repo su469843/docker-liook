@@ -53,6 +53,11 @@ services:
       TURN_URL: ${TURN_URL:-}
       TURN_USER: ${TURN_USER:-}
       TURN_PASS: ${TURN_PASS:-}
+      # 视频转码 / 播放（服务端 ffmpeg 切 HLS + AES-128 加密 + 有效期签名地址）
+      FFMPEG_PATH: ${FFMPEG_PATH:-/usr/bin/ffmpeg}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-4096}
+      SIGN_TTL_MINUTES: ${SIGN_TTL_MINUTES:-120}
+      TRANSCODE_CONCURRENCY: ${TRANSCODE_CONCURRENCY:-2}
     volumes:
       # 数据库 + 上传的视频/聊天图片都放这里，备份目录即可
       - ./data:/data

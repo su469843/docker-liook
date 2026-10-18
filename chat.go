@@ -458,6 +458,7 @@ func (a *API) handleChatHistory(w http.ResponseWriter, r *http.Request, u *User)
 		return
 	}
 	a.db.MarkRead(u.ID, peerID)
+	a.hub.sendTo(u.ID, serverMsg{Type: "unread"}) // 同账号其它标签页同步清角标
 	// 前端希望旧→新排序
 	if msgs == nil {
 		msgs = []Message{}
@@ -466,6 +467,26 @@ func (a *API) handleChatHistory(w http.ResponseWriter, r *http.Request, u *User)
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	writeJSON(w, http.StatusOK, msgs)
+}
+
+// handleChatRead 私聊标记已读（点开会话即调用，前端据此刷新红点）
+func (a *API) handleChatRead(w http.ResponseWriter, r *http.Request, u *User) {
+	peerID, err := strconv.ParseInt(r.PathValue("peer"), 10, 64)
+	if err != nil || peerID <= 0 {
+		writeErr(w, 400, "无效用户")
+		return
+	}
+	peer, err := a.db.GetUser(peerID)
+	if err != nil || !a.db.CanChat(u, peer) {
+		writeErr(w, http.StatusForbidden, "无法与该用户聊天")
+		return
+	}
+	if err := a.db.MarkRead(u.ID, peerID); err != nil {
+		writeErr(w, 500, "标记已读失败")
+		return
+	}
+	a.hub.sendTo(u.ID, serverMsg{Type: "unread"})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *API) handleMyGroups(w http.ResponseWriter, r *http.Request, u *User) {
@@ -529,6 +550,7 @@ func (a *API) handleGroupRead(w http.ResponseWriter, r *http.Request, u *User) {
 		req.LastID = a.db.LatestGroupMessageID(courseID)
 	}
 	a.db.MarkGroupRead(courseID, u.ID, req.LastID)
+	a.hub.sendTo(u.ID, serverMsg{Type: "unread"})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

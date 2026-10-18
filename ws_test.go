@@ -675,3 +675,180 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("非法注册模式应 400，实际 %d", r.StatusCode)
 	}
 }
+
+// TestVideoUploadAndSignedPlayback 覆盖新视频链路：
+// 直传/分片上传 → （测试环境没装 ffmpeg）退化为源文件直出 → 签名 URL 播放 + Range + 过期/篡改拒绝。
+func TestVideoUploadAndSignedPlayback(t *testing.T) {
+	_, handler := newTestAPI(t)
+	srv := httptest.NewServer(handler)
+	testBase = srv.URL
+	defer srv.Close()
+
+	c := newClient()
+	resp := postJSON(t, c, "/api/login", map[string]string{"username": "admin", "password": "admin-pass-123"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("管理员登录失败: %d", resp.StatusCode)
+	}
+
+	// 默认封面配色（建课即可选，非法颜色应拒绝）
+	bad := postJSON(t, c, "/api/courses", map[string]any{"title": "颜色测试", "cover_color": "#ff0000"})
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法封面颜色应 400，实际 %d", bad.StatusCode)
+	}
+	var course Course
+	decode(t, postJSON(t, c, "/api/courses", map[string]any{"title": "视频课", "cover_color": "blue"}), &course)
+	if course.CoverColor != "blue" || course.ID == 0 {
+		t.Fatalf("课程封面配色未保存: %+v", course)
+	}
+	csid := strconv.FormatInt(course.ID, 10)
+
+	var lesson Lesson
+	decode(t, postJSON(t, c, "/api/courses/"+csid+"/lessons", map[string]any{"title": "第1讲", "kind": "video"}), &lesson)
+	if lesson.ID == 0 {
+		t.Fatal("创建视频课时失败")
+	}
+	lsid := strconv.FormatInt(lesson.ID, 10)
+
+	// ---------- 一次直传 ----------
+	payload := bytes.Repeat([]byte("A"), 200000)
+	req, _ := http.NewRequest(http.MethodPost, testBase+"/api/lessons/"+lsid+"/video?name=clip.mp4", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	r2, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uploaded Lesson
+	decode(t, r2, &uploaded)
+	if uploaded.ID != lesson.ID {
+		t.Fatalf("直传返回异常: %+v", uploaded)
+	}
+
+	// 没装 ffmpeg → 退化为源文件直出；轮询到 ready
+	waitReady := func(lessonID string) map[string]any {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			var st map[string]any
+			getJSON(t, c, "/api/lessons/"+lessonID+"/video/status", &st)
+			if st["status"] == "ready" {
+				return st
+			}
+			if st["status"] == "failed" {
+				t.Fatalf("转码失败: %+v", st)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("等待转码就绪超时: %+v", st)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	st := waitReady(lsid)
+	if st["video_mode"] != "mp4" {
+		t.Fatalf("无 ffmpeg 时应退化为 mp4 直出，实际 %+v", st)
+	}
+	mediaURL, _ := st["video_url"].(string)
+	if !strings.Contains(mediaURL, "e=") || !strings.Contains(mediaURL, "s=") {
+		t.Fatalf("播放地址应带有效期签名: %q", mediaURL)
+	}
+
+	// ---------- 签名地址：匿名可播 + Range 渐进 ----------
+	anon := newClient()
+	full, err := anon.Get(testBase + mediaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(full.Body)
+	full.Body.Close()
+	if full.StatusCode != http.StatusOK || len(body) != len(payload) {
+		t.Fatalf("签名播放异常: status=%d len=%d", full.StatusCode, len(body))
+	}
+	rangeReq, _ := http.NewRequest(http.MethodGet, testBase+mediaURL, nil)
+	rangeReq.Header.Set("Range", "bytes=0-99")
+	ranged, err := anon.Do(rangeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, _ := io.ReadAll(ranged.Body)
+	ranged.Body.Close()
+	if ranged.StatusCode != http.StatusPartialContent || len(rb) != 100 || ranged.Header.Get("Content-Range") == "" {
+		t.Fatalf("Range 播放异常: status=%d len=%d cr=%q", ranged.StatusCode, len(rb), ranged.Header.Get("Content-Range"))
+	}
+
+	// 篡改签名 / 过期 → 401
+	for _, badURL := range []string{
+		strings.Replace(mediaURL, "s=", "s=deadbeef", 1),
+	} {
+		resp, err := anon.Get(testBase + badURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("篡改签名应 401，实际 %d", resp.StatusCode)
+		}
+	}
+
+	// ---------- 分片上传（缺片拒绝，补齐后成功） ----------
+	var lesson2 Lesson
+	decode(t, postJSON(t, c, "/api/courses/"+csid+"/lessons", map[string]any{"title": "第2讲 大文件", "kind": "video"}), &lesson2)
+	l2sid := strconv.FormatInt(lesson2.ID, 10)
+	initBody, _ := json.Marshal(map[string]any{"file_name": "big.mp4", "size": 20 << 20})
+	reqI, _ := http.NewRequest(http.MethodPost, testBase+"/api/lessons/"+l2sid+"/upload/init", bytes.NewReader(initBody))
+	reqI.Header.Set("Content-Type", "application/json")
+	respI, err := c.Do(reqI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ini struct {
+		UploadID  string `json:"upload_id"`
+		ChunkSize int64  `json:"chunk_size"`
+		Chunks    int    `json:"chunks"`
+	}
+	decode(t, respI, &ini)
+	if ini.UploadID == "" || ini.Chunks != 2 || ini.ChunkSize != 16<<20 {
+		t.Fatalf("分片会话异常: %+v", ini)
+	}
+	putChunk := func(idx int, data []byte) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut,
+			testBase+"/api/lessons/"+l2sid+"/upload/"+ini.UploadID+"/"+strconv.Itoa(idx), bytes.NewReader(data))
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := putChunk(0, bytes.Repeat([]byte("B"), int(ini.ChunkSize))); code != http.StatusOK {
+		t.Fatalf("上传分片 0 失败: %d", code)
+	}
+	var stt struct {
+		Received []int `json:"received"`
+	}
+	getJSON(t, c, "/api/lessons/"+l2sid+"/upload/"+ini.UploadID, &stt)
+	if len(stt.Received) != 1 || stt.Received[0] != 0 {
+		t.Fatalf("已收分片列表异常: %+v", stt)
+	}
+	// 缺片就完成 → 400
+	reqD, _ := http.NewRequest(http.MethodPost, testBase+"/api/lessons/"+l2sid+"/upload/"+ini.UploadID+"/done", nil)
+	respD, _ := c.Do(reqD)
+	respD.Body.Close()
+	if respD.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺片应拒绝完成，实际 %d", respD.StatusCode)
+	}
+	if code := putChunk(1, bytes.Repeat([]byte("C"), 4<<20)); code != http.StatusOK {
+		t.Fatalf("上传分片 1 失败: %d", code)
+	}
+	reqD2, _ := http.NewRequest(http.MethodPost, testBase+"/api/lessons/"+l2sid+"/upload/"+ini.UploadID+"/done", nil)
+	respD2, _ := c.Do(reqD2)
+	respD2.Body.Close()
+	if respD2.StatusCode != http.StatusOK {
+		t.Fatalf("合并分片失败: %d", respD2.StatusCode)
+	}
+	st2 := waitReady(l2sid)
+	if st2["video_url"] == "" {
+		t.Fatalf("分片上传后应可播放: %+v", st2)
+	}
+}

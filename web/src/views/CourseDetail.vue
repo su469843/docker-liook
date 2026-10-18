@@ -3,10 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import { store } from '../store'
-import { coverGradient, courseArt, fmtDur, kindIconName, kindLabel, fmtDate } from '../format'
+import { fmtDur, kindIconName, kindLabel, fmtDate } from '../format'
 import { toastOk, toastErr } from '../ui'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
+import CoverArt from '../components/CoverArt.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -127,9 +128,9 @@ async function togglePublish() {
 
     <template v-else-if="course">
       <div class="detail-hero">
-        <div class="detail-cover" :style="!coverUrl ? { background: coverGradient(course.id) } : null">
+        <div class="detail-cover">
           <img v-if="coverUrl" :src="coverUrl" :alt="course.title" />
-          <div v-else class="cover-fallback"><Icon :name="courseArt(course.id)" :size="62" /></div>
+          <CoverArt v-else :course="course" :size="70" />
         </div>
         <div class="detail-info">
           <div class="row">
