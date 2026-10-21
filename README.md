@@ -1,10 +1,20 @@
 # 📚 CourseHub — 自托管课程平台（对标小鹅通 / 知识店铺）
 
 <p align="center">
-  <a href="https://github.com/su469843/docker-liook/releases"><img src="https://img.shields.io/github/release/su469843/docker-liook" alt="Release version"></a>
-  <a href="https://github.com/su469843/docker-liook/blob/master/LICENSE"><img src="https://img.shields.io/github/license/su469843/docker-liook" alt="License"></a>
+  <a href="https://github.com/su469843/docker-liook/releases">
+    <img src="https://img.shields.io/github/release/su469843/docker-liook" alt="Release version">
+  </a>
+  <a href="https://github.com/su469843/docker-liook/blob/master/LICENSE">
+    <img src="https://img.shields.io/github/license/su469843/docker-liook" alt="License">
+  </a>
   <a href="https://github.com/su469843/docker-liook/pkgs/container/docker-liook">
-    <img src="https://img.shields.io/docker/pulls/frooodle/s-pdf" alt="Docker Pulls">
+    <img src="https://img.shields.io/badge/ghcr.io-su469843%2Fdocker--liook-blue" alt="GHCR">
+  </a>
+  <a href="https://github.com/su469843/docker-liook/stargazers">
+    <img src="https://img.shields.io/github/stars/su469843/docker-liook?style=flat&logo=github&color=yellow&label=Stars" alt="GitHub Stars">
+  </a>
+  <a href="https://github.com/su469843/docker-liook/network">
+    <img src="https://img.shields.io/github/forks/su469843/docker-liook?style=flat&logo=github&color=purple&label=Forks" alt="GitHub Forks">
   </a>
 </p>
 
