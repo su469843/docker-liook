@@ -129,11 +129,14 @@
 
 三种方式任选，产物都是同一个 Go 二进制（前端已嵌入，无外部运行时依赖）。
 
+**📄 文档**：部署手册 [中文](docs/DEPLOYMENT.md) · [English](docs/DEPLOYMENT_EN.md)｜二次开发指南 [中文](docs/DEVELOPMENT.md) · [English](docs/DEVELOPMENT_EN.md)
+
 ### 方式一：Docker Compose 在服务器上直接构建（最简单）
 
 ```bash
 # 1. 把项目放到服务器上（git clone 或直接上传）
-cd course-hub
+git clone https://github.com/su469843/docker-liook.git
+cd docker-liook
 
 # 2. 配置（至少改密码！）
 cp .env.example .env
@@ -198,7 +201,7 @@ Go 静态编译（`CGO_ENABLED=0`），单文件即可运行，适合 512M 内�
 # 服务器上安装（以 amd64 为例）
 sudo useradd -r -s /usr/sbin/nologin -d /opt/coursehub coursehub
 sudo mkdir -p /opt/coursehub /var/lib/coursehub
-sudo cp course-hub-linux-amd64 /opt/coursehub/course-hub
+sudo cp dist/course-hub-linux-amd64 /opt/coursehub/course-hub
 sudo chmod +x /opt/coursehub/course-hub
 sudo chown -R coursehub:coursehub /opt/coursehub /var/lib/coursehub
 sudo cp deploy/coursehub.env.example /etc/coursehub.env
@@ -245,6 +248,8 @@ docker compose down && sudo rm -f ./data/coursehub.db* && docker compose up -d
 | 没有摄像头也能用 | 摄像头不可用时自动降级为语音通话，不会整通失败 |
 
 ## 💻 本地开发
+
+> 完整的本地开发流程、代码地图与改造示例见 **[二次开发指南](docs/DEVELOPMENT.md)**（English: [docs/DEVELOPMENT_EN.md](docs/DEVELOPMENT_EN.md)）。
 
 ```bash
 # 前端（端口 5173，已代理 API / HLS / 文件 / WebSocket 到 8080）
@@ -357,10 +362,12 @@ POST   /api/lessons/:id/doc           multipart 上传文档（≤200MB）
 GET    /api/lessons/:id/file          下载/预览文档
 GET    /hls/:id/:file                 HLS 播放代理（m3u8 与分片同路径）
 GET    /files/                       聊天图片 / 图文插图
-POST   /api/upload/image              multipart 上传图片（≤10MB）
+POST   /api/upload/image             multipart 上传图片（≤10MB）
+POST   /api/chat/upload              聊天图片上传（同上，语义化别名）
 
 GET    /api/contacts                  可聊天联系人（含未读数/在线状态）
 GET    /api/chat/:peer?before=id      私聊记录（默认最近 50 条）
+POST   /api/chat/:peer/read           {last_id?} 标记私聊已读
 GET    /api/groups                    我加入的课程群（含最后一条消息与未读数）
 GET    /api/groups/:id/messages       群聊记录（默认最近 50 条）
 POST   /api/groups/:id/read           {last_id?} 标记群聊已读
@@ -369,6 +376,7 @@ GET    /ws                            WebSocket：私聊 + 群聊 + 通话信令
 
 GET    /api/settings                  站点设置（管理员）
 PUT    /api/settings                  {site_name,register_mode} 修改站点设置（管理员）
+POST   /api/settings/storage/test     存储连接测试（管理员，后台「文件存储」用）
 POST   /api/settings/invite           重新生成机构邀请码（管理员）
 GET    /api/users                     用户列表（管理员）
 POST   /api/users                     创建账号（管理员）
@@ -407,6 +415,7 @@ docker-compose.yml     一键部署（支持 --build 或拉取镜像仓库镜像
 .dockerignore          构建上下文裁剪
 .github/workflows/     ci.yml（测试）与 docker.yml（多架构镜像推送 GHCR）
 deploy/                systemd unit 与环境变量模板（不用 Docker 时）
+docs/                  文档：部署指南（DEPLOYMENT.md）与二次开发指南（DEVELOPMENT.md），均有中英文版
 scripts/               交叉编译 Linux 二进制的脚本（.ps1 / .sh）
 ```
 
