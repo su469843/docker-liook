@@ -1,5 +1,13 @@
 # 📚 CourseHub — 自托管课程平台（对标小鹅通 / 知识店铺）
 
+<p align="center">
+  <a href="https://github.com/su469843/docker-liook/releases"><img src="https://img.shields.io/github/release/su469843/docker-liook" alt="Release version"></a>
+  <a href="https://github.com/su469843/docker-liook/actions/workflows/release.yml"><img src="https://github.com/su469843/docker-liook/workflows/Build/badge.svg" alt="Build status"></a>
+  <a href="https://github.com/su469843/docker-liook/actions/workflows/beta-pack.yml"><img src="https://github.com/su469843/docker-liook/workflows/Build%20Beta/badge.svg" alt="Build status"></a>
+  <<a href="https://github.com/su469843/docker-liook/blob/master/LICENSE"><img src="https://img.shields.io/github/license/su469843/docker-liook" alt="License"></a>
+</p>
+
+
 用 **Vue 3 + Go** 编写的轻量在线课程站点，界面与流程参考小鹅通 / 知识店铺：**老师有独立的教学中心**（建课、上架、课时管理、学员管理），**学员只在课程市场选课、上课、和老师/同学群聊**。视频上传后**由服务器 ffmpeg 切成 HLS 并加密**，播放走带有效期的签名地址；整个站点**自托管**，数据、存储、访问策略都在自己手里，单容器跑得动。
 
 ## ✨ 特性
