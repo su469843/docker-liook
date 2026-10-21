@@ -3,6 +3,9 @@
 <p align="center">
   <a href="https://github.com/su469843/docker-liook/releases"><img src="https://img.shields.io/github/release/su469843/docker-liook" alt="Release version"></a>
   <a href="https://github.com/su469843/docker-liook/blob/master/LICENSE"><img src="https://img.shields.io/github/license/su469843/docker-liook" alt="License"></a>
+  <a href="https://ghcr.io/su469843/docker-liook">
+    <img src="https://img.shields.io/docker/pulls/frooodle/s-pdf" alt="Docker Pulls">
+  </a>
 </p>
 
 
