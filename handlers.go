@@ -102,6 +102,19 @@ func (a *API) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/ice", a.requireUser(a.handleIce))
 	mux.HandleFunc("GET /ws", a.handleWS)
 
+	// 作业 / 练习 / 打卡
+	mux.HandleFunc("GET /api/practices", a.requireUser(a.handleListPractices))
+	mux.HandleFunc("POST /api/courses/{id}/practices", a.requireRole(a.handleCreatePractice, "teacher", "admin"))
+	mux.HandleFunc("GET /api/practices/{id}", a.requireUser(a.handleGetPractice))
+	mux.HandleFunc("PUT /api/practices/{id}", a.requireRole(a.handleUpdatePractice, "teacher", "admin"))
+	mux.HandleFunc("DELETE /api/practices/{id}", a.requireRole(a.handleDeletePractice, "teacher", "admin"))
+	mux.HandleFunc("POST /api/practices/{id}/submit", a.requireUser(a.handleSubmitPractice))
+	mux.HandleFunc("GET /api/practices/{id}/submissions", a.requireUser(a.handleListPracticeSubmissions))
+	mux.HandleFunc("POST /api/practices/{id}/submissions/{sid}/grade", a.requireUser(a.handleGradePracticeSubmission))
+	mux.HandleFunc("GET /api/checkins", a.requireUser(a.handleListCheckins))
+	mux.HandleFunc("POST /api/checkins", a.requireUser(a.handleCreateCheckin))
+	mux.HandleFunc("GET /api/courses/{id}/checkins", a.requireUser(a.handleCourseCheckins))
+
 	// 站点设置（管理员）
 	mux.HandleFunc("GET /api/settings", a.requireRole(a.handleGetSettings, "admin"))
 	mux.HandleFunc("PUT /api/settings", a.requireRole(a.handleUpdateSettings, "admin"))

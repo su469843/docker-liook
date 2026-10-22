@@ -76,6 +76,7 @@ async function logout() {
         <nav class="nav-links">
           <RouterLink to="/" class="nav-link" :class="{ active: route.path === '/' || route.path.startsWith('/course/') }">课程市场</RouterLink>
           <RouterLink v-if="store.user?.role === 'student'" to="/my" class="nav-link">我的课程</RouterLink>
+          <RouterLink to="/practice" class="nav-link">练习中心</RouterLink>
           <RouterLink v-if="isStaff" to="/studio" class="nav-link">老师工作台</RouterLink>
           <RouterLink v-if="isAdmin" to="/admin" class="nav-link">管理后台</RouterLink>
           <RouterLink to="/messages" class="nav-link">消息</RouterLink>
@@ -94,6 +95,7 @@ async function logout() {
             </div>
             <div v-if="menuOpen" class="dropdown-menu" @click.stop>
               <RouterLink to="/messages" @click="closeMenu"><Icon name="chat" :size="17" /> 我的消息</RouterLink>
+              <RouterLink to="/practice" @click="closeMenu"><Icon name="target" :size="17" /> 练习中心</RouterLink>
               <RouterLink v-if="isStaff" to="/studio" @click="closeMenu"><Icon name="class" :size="17" /> 老师工作台</RouterLink>
               <RouterLink v-if="isAdmin" to="/admin" @click="closeMenu"><Icon name="settings" :size="17" /> 管理后台</RouterLink>
               <div class="divider"></div>

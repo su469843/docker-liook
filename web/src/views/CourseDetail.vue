@@ -153,6 +153,7 @@ async function togglePublish() {
           <div class="row">
             <template v-if="canManage">
               <RouterLink :to="'/studio/' + course.id" class="btn primary">管理课程内容</RouterLink>
+              <RouterLink :to="'/studio/' + course.id + '/practice'" class="btn"><Icon name="file-plus" :size="16" /> 作业管理</RouterLink>
               <button class="btn" @click="togglePublish">{{ course.published ? '下架市场' : '上架到市场' }}</button>
               <button class="btn" @click="startLearning">预览学习页</button>
             </template>
@@ -160,6 +161,7 @@ async function togglePublish() {
               <button class="btn primary lg" @click="enrolled ? startLearning() : (course.published ? enrollMarket() : (showJoin = true))">
                 {{ enrolled ? '继续学习' : (course.published ? '加入学习' : '输入邀请码加入') }}
               </button>
+              <RouterLink v-if="enrolled" to="/practice" class="btn lg"><Icon name="target" :size="16" /> 作业与练习</RouterLink>
               <button v-if="!enrolled" class="btn lg" @click="showJoin = true">我有邀请码</button>
             </template>
           </div>

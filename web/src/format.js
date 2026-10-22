@@ -94,3 +94,63 @@ export function quoteText(m) {
   const t = m.ref_time ? fmtDur(m.ref_time) : ''
   return [m.ref_title || '课时', t].filter(Boolean).join(' · ')
 }
+
+// ---------------- 作业 / 练习 / 打卡 ----------------
+
+export const PRACTICE_KINDS = [
+  { id: 'homework', name: '作业', icon: 'file-plus' },
+  { id: 'quiz', name: '考卷练习', icon: 'target' },
+  { id: 'word', name: '单词练习', icon: 'book' },
+  { id: 'sentence', name: '句子练习', icon: 'quote' },
+]
+
+export const PRACTICE_SUBJECTS = [
+  { id: 'english', name: '英语' },
+  { id: 'math', name: '数学' },
+  { id: 'chinese', name: '语文' },
+  { id: 'other', name: '综合' },
+]
+
+export const CHECKIN_KINDS = [
+  { id: 'word', name: '单词' },
+  { id: 'sentence', name: '句子' },
+  { id: 'reading', name: '阅读' },
+]
+
+export const QUESTION_TYPES = [
+  { id: 'choice', name: '选择题' },
+  { id: 'fill', name: '填空题' },
+  { id: 'judge', name: '判断题' },
+  { id: 'short', name: '简答题' },
+]
+
+export function practiceKindLabel(kind) {
+  return PRACTICE_KINDS.find((k) => k.id === kind)?.name || '练习'
+}
+
+export function practiceKindIcon(kind) {
+  return PRACTICE_KINDS.find((k) => k.id === kind)?.icon || 'file-plus'
+}
+
+export function subjectLabel(subject) {
+  return PRACTICE_SUBJECTS.find((s) => s.id === subject)?.name || '综合'
+}
+
+export function checkinKindLabel(kind) {
+  return CHECKIN_KINDS.find((k) => k.id === kind)?.name || '单词'
+}
+
+// 2026-01-01T08:00 → datetime-local 输入框需要的格式
+export function toLocalInput(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+export function monthNow() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+

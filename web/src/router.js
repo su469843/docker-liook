@@ -7,6 +7,9 @@ import Learn from './views/Learn.vue'
 import Messages from './views/Messages.vue'
 import Studio from './views/Studio.vue'
 import StudioCourse from './views/StudioCourse.vue'
+import StudioPractice from './views/StudioPractice.vue'
+import PracticeCenter from './views/PracticeCenter.vue'
+import PracticeDetail from './views/PracticeDetail.vue'
 import Admin from './views/Admin.vue'
 import { store, loadMe, loadConfig, homeFor } from './store'
 
@@ -20,8 +23,11 @@ export const router = createRouter({
     { path: '/course/:id', component: CourseDetail },
     { path: '/learn/:courseId/:lessonId?', component: Learn, meta: { chrome: false } },
     { path: '/messages', component: Messages },
+    { path: '/practice', component: PracticeCenter },
+    { path: '/practice/:id', component: PracticeDetail },
     { path: '/studio', component: Studio, meta: { roles: ['teacher', 'admin'] } },
     { path: '/studio/:courseId', component: StudioCourse, meta: { roles: ['teacher', 'admin'] } },
+    { path: '/studio/:courseId/practice', component: StudioPractice, meta: { roles: ['teacher', 'admin'] } },
     { path: '/admin', component: Admin, meta: { roles: ['admin'] } },
     // 兼容旧地址
     { path: '/chat', redirect: '/messages' },

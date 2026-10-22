@@ -82,6 +82,8 @@ config.go      环境变量 → Config 结构体（JWT_SECRET 缺省自动生成
 session.go     会话 Cookie（HMAC token，7 天）+ CSRF（sameOrigin）+ requireUser/requireRole
 user.go        登录/注册/三档注册模式/用户管理 + 登录限流 + 存储配置测试接口
 store.go       SQLite：表结构、模型（User/Course/Lesson/Message...）、全部查询
+practice_store.go   作业/练习/打卡：建表、模型、自动判分、打卡统计查询
+practice_handlers.go 作业/练习/打卡 REST 接口（出题/交卷/批改/打卡）
 storage.go     Storage 接口 + local/S3/WebDAV 三个实现 + 运行时切换（stg()）
 handlers.go    全部 REST 路由注册 + 课程/课时/市场/媒体代理 handler + 授权助手
 media.go       视频链路：直传/分片上传、ffmpeg 转 HLS(AES-128)、签名 URL、HLS 代理
@@ -91,11 +93,12 @@ security.go    clientIP（反代感知）、令牌桶限流、请求体上限、
 config.go      环境变量加载（getenv/getenvInt，JWT_SECRET 持久化）
 webdist.go     go:embed all:web/dist（-tags noembed 时不嵌入）
 ws_test.go     端到端测试（真实 HTTP + WebSocket）
+practice_test.go     作业/练习/打卡：判分单测 + 端到端接口测试
 web/           Vue 3 前端（Vite）
   src/api.js        fetch 封装：same-origin Cookie、401 自动跳 /login
   src/ws.js         全局单例 WebSocket + 3s 自动重连 + onWS 订阅
   src/store.js     前端状态、src/router.js 路由、src/style.css 设计系统
-  src/views/       Login/Market/MyCourses/CourseDetail/Learn/Messages/Studio/StudioCourse/Admin
+  src/views/       Login/Market/MyCourses/CourseDetail/Learn/Messages/PracticeCenter/PracticeDetail/Studio/StudioCourse/StudioPractice/Admin
   src/components/  VideoPlayer/RichEditor/GroupChat/Modal/ToastHost/Icon/Sticker…
 deploy/        systemd unit + 环境变量模板
 scripts/       build-linux.sh / .ps1 交叉编译
@@ -194,7 +197,7 @@ func (s *Store) SiteStats() (users, courses, lessons int64, err error) {
 }
 ```
 
-> 表结构都在 `store.go` 顶部的 `schema` 字符串里；**改表结构**时，新增列用 `ALTER TABLE ... ADD COLUMN` 并放在迁移区（项目用 `CREATE TABLE IF NOT EXISTS` + 启动时补列的方式做自动迁移，参考 store.go 中已有的迁移写法）。
+> 表结构主要在 `store.go` 顶部的 `schema` 字符串里（作业/练习/打卡的表在 `practice_store.go` 的 `ensurePracticeSchema`，由 `OpenStore` 启动时调用）；**改表结构**时，新增列用 `ALTER TABLE ... ADD COLUMN` 并放在迁移区（项目用 `CREATE TABLE IF NOT EXISTS` + 启动时补列的方式做自动迁移，参考 store.go 中已有的迁移写法）。
 
 **② 写 handler（handlers.go）**——遵循统一模式：解析参数 → 鉴权 → 查询 → `writeJSON`/`writeErr`：
 

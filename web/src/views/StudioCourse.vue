@@ -406,6 +406,7 @@ async function removeCourse() {
         </div>
         <div class="row">
           <button class="btn" @click="togglePublish">{{ course.published ? '下架市场' : '上架市场' }}</button>
+          <RouterLink :to="'/studio/' + course.id + '/practice'" class="btn"><Icon name="file-plus" :size="16" /> 作业练习</RouterLink>
           <RouterLink :to="'/course/' + course.id" class="btn">预览课程主页</RouterLink>
         </div>
       </div>

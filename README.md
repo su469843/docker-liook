@@ -27,6 +27,7 @@
 - 🛒 **课程市场**：老师把课程「上架市场」后，学员可以自己在市场里选课加入；没上架的课程只能凭邀请码加入
 - 🎬 **服务端转码 HLS**：源视频直传/分片上传到存储后端，服务器用 ffmpeg 切成 HLS 并 **AES-128 加密**；播放地址是 **带有效期的签名 URL**，过期/外链盗用直接失效（没装 ffmpeg 时自动退化为 MP4 + HTTP Range 渐进播放）
 - 📝 **三种课时类型**：视频课时（HLS 播放）、图文课时（富文本编辑器，支持插图）、文档课时（PDF / Word / PPT / 文本，在线预览或下载）
+- ✍️ **作业 / 练习 / 打卡**：老师按课程出「作业 / 考卷 / 单词 / 句子」练习，题型支持选择、填空、判断、简答；**客观题交卷即自动判分**，含简答题时老师批改后出总分；学员端有**单词/句子每日打卡**（连续天数、本月与累计统计），老师可查看课程学员打卡情况。本版本**不内置题库**，题目全部由老师自己录入
 - 💬 **课程群聊 + 私聊**：加入课程后自动获得「任课老师私聊」与「课程群聊」，群里可以**引用某个课时的某个播放时间点**，点一下直接跳到那一段
 - 🎨 **手绘矢量图标**：全站图标与聊天表情都是内置的手绘 SVG（不依赖 emoji 字体，任何系统上显示一致、不发虚）
 - 🔐 **注册策略可选**：后台三档 —— 开放注册 / 必须填机构邀请码 / 完全关闭（只能由管理员建号）
@@ -43,8 +44,8 @@
 | 角色 | 能做什么 | 入口 |
 |---|---|---|
 | 管理员 admin | 管理用户（建老师/学员账号、改密、禁用）、设置注册模式与站点名、管全部课程（改任课老师、上架/下架、删除） | 「后台管理」 |
-| 老师 teacher | 只在**教学中心**建课、管理课时（视频/图文/文档）、上传封面、上架市场、查看学员、发邀请码 | 「教学中心」 |
-| 学员 student | 在**课程市场**浏览已上架课程、凭邀请码加入课程、上课（看视频/图文/文档）、和老师私聊、和同班同学群聊 | 「发现课程」/「我的课程」 |
+| 老师 teacher | 只在**教学中心**建课、管理课时（视频/图文/文档）、上传封面、上架市场、查看学员、发邀请码；布置并批改作业/练习、查看学员打卡 | 「教学中心」 |
+| 学员 student | 在**课程市场**浏览已上架课程、凭邀请码加入课程、上课（看视频/图文/文档）、**做作业/练习（自动判分）**、**单词句子每日打卡**、和老师私聊、和同班同学群聊 | 「发现课程」/「我的课程」/「练习中心」 |
 
 - 首次启动自动创建管理员 **admin**，密码取环境变量 `ADMIN_PASSWORD`；登录后到「后台管理 → 用户管理」创建老师账号。
 - 老师把课程**上架市场**，学员即可自助加入；不上架时，老师把课程**邀请码**发给学员，学员在「我的课程」输入邀请码加入。
@@ -65,7 +66,7 @@
 | 大文件上传 | 断点续传、分片 | 默认直传（带进度）+ 可选 16MB 分片上传，单片可重传、服务端合并 | ✅ |
 | 内容保护 | 防盗链、播放域名白名单、跑马灯水印、DRM | HLS **AES-128 加密** + **带有效期签名 URL**（分片/密钥都签名）+ 登录态与课程权限校验；**无水印、无 DRM、无并发设备数限制** | 🟡 |
 | 存储 | 点播云 / 对象存储 | 本地目录 / S3(MinIO) / WebDAV，后台一键切换并测试连接 | ✅ |
-| 学习路径 | 目录、学习进度、学习记录、考试、作业、证书 | 课时目录 + 播放 + 可「引用视频时间点」发到群聊；**无学习进度/完成度记录，无考试/作业/证书** | 🟡 |
+| 学习路径 | 目录、学习进度、学习记录、考试、作业、证书 | 课时目录 + 播放 + 「引用视频时间点」发群聊；**作业/练习（选择题/填空/判断/简答，客观题自动判分 + 简答题老师批改）、单词/句子打卡**；**无学习进度/完成度记录，无正式考试/证书** | 🟡 |
 | 互动 | 社群、圈子、问答、评论、弹幕 | 课程群聊 + 老师私聊 + **1 对 1 语音/视频通话**；**无评论/问答板块、无弹幕** | 🟡 |
 | 通知 | 短信、服务号、App Push、邮件 | 站内未读红点（多标签页同步）；**无短信/邮件/微信推送** | 🟡 |
 | 用户与组织 | 会员体系、多门店、员工细分权限 | 三角色（管理员/老师/学员）+ 三档注册策略（开放 / 机构邀请码 / 关闭）；**无多租户、无机构层级、无细粒度权限** | 🟡 |
@@ -123,7 +124,7 @@
 
 **教学与互动**
 - [ ] 课程合集/专栏、课时试看、章节权限
-- [ ] 评论 / 问答 / 作业 / 考试 / 证书
+- [ ] 评论 / 问答 / 正式考试（计时防作弊）/ 证书
 - [ ] 课程水印（跑马灯）、截屏防护、并发播放设备数限制
 
 **管理与运营**
@@ -384,6 +385,19 @@ GET    /files/                       聊天图片 / 图文插图
 POST   /api/upload/image             multipart 上传图片（≤10MB）
 POST   /api/chat/upload              聊天图片上传（同上，语义化别名）
 
+# 作业 / 练习 / 打卡
+GET    /api/practices?course_id=       练习列表（学员=已加入课程的已发布练习，含我的提交状态；老师=自己课程；管理员=全部）
+POST   /api/courses/:id/practices      {title,kind:homework|quiz|word|sentence,subject,deadline?,duration?,published?,questions:[{type,stem,options?,answer,score,analysis?}]} 老师布置作业/练习
+GET    /api/practices/:id              练习详情 {practice,questions,submission}（交卷前不返回标准答案）
+PUT    /api/practices/:id              修改练习/题目（已有学员提交后不能再改题）
+DELETE /api/practices/:id              删除练习及其提交记录
+POST   /api/practices/:id/submit       {answers:[{question_id,answer}]} 学员交卷：选择题/填空/判断自动判分，简答题待批改
+GET    /api/practices/:id/submissions  提交列表（老师/管理员）
+POST   /api/practices/:id/submissions/:sid/grade  {score,comment?} 老师批改出总分
+GET    /api/checkins?month=YYYY-MM     我的打卡汇总（连续天数/本月/累计 + 当月明细）
+POST   /api/checkins                   {course_id?,subject,kind:word|sentence|reading,count,minutes,content?} 打卡（同天同类覆盖）
+GET    /api/courses/:id/checkins?month=  课程学员打卡统计（老师/管理员）
+
 GET    /api/contacts                  可聊天联系人（含未读数/在线状态）
 GET    /api/chat/:peer?before=id      私聊记录（默认最近 50 条）
 POST   /api/chat/:peer/read           {last_id?} 标记私聊已读
@@ -419,15 +433,18 @@ config.go      环境变量（JWT_SECRET 缺省时自动生成并持久化）
 session.go     Cookie 会话 + CSRF + 鉴权中间件
 user.go        登录/注册（三种注册模式）/用户管理 + 登录限流
 store.go       SQLite 模型与查询（用户/课程/课时/选课/市场/消息/群聊）
+practice_store.go     作业/练习/打卡：表结构、模型、自动判分与查询
+practice_handlers.go  作业/练习/打卡 REST 接口（出题、交卷、批改、打卡统计）
 storage.go     存储抽象：local / S3 / WebDAV
 handlers.go    课程、市场、课时、HLS/文档代理等 REST 路由
 chat.go        WebSocket Hub：私聊 + 课程群聊（引用时间点）+ 通话信令
 sanitize.go    图文课时 HTML 白名单清洗（防 XSS）
 ws_test.go     端到端测试
-web/           Vue 3 前端（Vite）：市场 / 我的课程 / 学习页 / 教学中心 / 后台管理
+practice_test.go      作业/练习/打卡：判分单测 + 端到端接口测试
+web/           Vue 3 前端（Vite）：市场 / 我的课程 / 学习页 / 教学中心 / 练习中心 / 后台管理
   src/style.css    小鹅通风格设计系统
   src/components/  VideoPlayer(课件播放) / RichEditor(图文) / GroupChat(课程群) / Modal / Toast…
-  src/views/       Login / Market / MyCourses / CourseDetail / Learn / Messages / Studio / StudioCourse / Admin
+  src/views/       Login / Market / MyCourses / CourseDetail / Learn / Messages / PracticeCenter / PracticeDetail / Studio / StudioCourse / StudioPractice / Admin
 
 Dockerfile             多阶段构建（前端 → 静态二进制 → alpine，约 50MB）
 docker-compose.yml     一键部署（支持 --build 或拉取镜像仓库镜像）

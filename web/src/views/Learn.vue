@@ -96,6 +96,7 @@ function onSeek({ lesson_id, time }) {
       <div class="course-title-mini">{{ course?.title || '加载中…' }}</div>
       <span class="spacer" style="flex:1"></span>
       <div class="row">
+        <RouterLink v-if="course && course.enrolled" to="/practice" class="btn small"><Icon name="file-plus" :size="15" /> 作业练习</RouterLink>
         <button class="btn small" :disabled="!prev" @click="goLesson(prev)">上一课</button>
         <button class="btn small primary" :disabled="!next" @click="goLesson(next)">下一课</button>
       </div>

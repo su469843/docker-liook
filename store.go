@@ -259,6 +259,10 @@ CREATE TABLE IF NOT EXISTS group_reads(
 	s := &Store{db: db}
 	// 旧版本库升级：videos → lessons（保留原 id，HLS 存储目录因此不变）
 	s.migrateVideosToLessons()
+	// 作业/练习/打卡表（CREATE TABLE IF NOT EXISTS，老库自动补齐）
+	if err := s.ensurePracticeSchema(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
