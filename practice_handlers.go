@@ -48,7 +48,7 @@ func normalizeChoiceAnswer(raw string, options []string) string {
 	if len(up) == 1 && up[0] >= 'A' && up[0] <= 'H' {
 		return up
 	}
-	if len(up) > 1 && up[0] >= 'A' && up[0] <= 'H' && (up[1] == '.' || up[1] == '、' || up[1] == ' ') {
+	if len(up) > 1 && up[0] >= 'A' && up[0] <= 'H' && choiceAnswerHasSeparator(up) {
 		return string(up[0])
 	}
 	for i, opt := range options {

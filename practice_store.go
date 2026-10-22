@@ -538,6 +538,16 @@ func judgeValue(s string) string {
 	return ""
 }
 
+// choiceAnswerHasSeparator 判断「选项字母 + 分隔符」形式：如 "A. 内容"、"A、内容"、"A 内容"。
+// 注意字符串下标取到的是字节，中文「、」是多字节，只能用 HasPrefix 判断。
+func choiceAnswerHasSeparator(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	rest := s[1:]
+	return strings.HasPrefix(rest, ".") || strings.HasPrefix(rest, "、") || strings.HasPrefix(rest, " ")
+}
+
 // AnswerCorrect 客观题判分（填空支持用 | 分隔多个可接受答案）
 func AnswerCorrect(q *PracticeQuestion, ans string) bool {
 	if q == nil {
@@ -555,7 +565,7 @@ func AnswerCorrect(q *PracticeQuestion, ans string) bool {
 		}
 		// 答案存字母时：兼容「A. 选项内容」「A、选项内容」作答，或直接写选项内容
 		if len(e) == 1 && e[0] >= 'A' && e[0] <= 'H' {
-			if len(a) > 1 && (a[1] == '.' || a[1] == '、' || a[1] == ' ') {
+			if choiceAnswerHasSeparator(a) {
 				return a[0] == e[0]
 			}
 			idx := int(e[0] - 'A')
