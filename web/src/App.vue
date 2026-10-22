@@ -19,6 +19,7 @@ const isAdmin = computed(() => store.user?.role === 'admin')
 const unread = computed(() => (store.unreadPrivate || 0) + (store.unreadGroup || 0))
 const hideChrome = computed(() => route.meta.chrome === false)
 const siteName = computed(() => store.config?.site_name || '课程中心')
+const version = computed(() => store.config?.version || '')
 
 function bindWS() {
   if (!store.user) return
@@ -100,6 +101,10 @@ async function logout() {
               <RouterLink v-if="isAdmin" to="/admin" @click="closeMenu"><Icon name="settings" :size="17" /> 管理后台</RouterLink>
               <div class="divider"></div>
               <button type="button" @click="logout"><Icon name="logout" :size="17" /> 退出登录</button>
+              <template v-if="version">
+                <div class="divider"></div>
+                <div class="menu-version" title="当前部署的构建版本">版本 {{ version }}</div>
+              </template>
             </div>
           </div>
         </div>

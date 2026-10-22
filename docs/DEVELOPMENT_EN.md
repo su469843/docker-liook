@@ -71,13 +71,14 @@ cd .. && go build .      # single static binary with the frontend embedded
 
 ```bash
 go test -tags noembed ./...   # backend tests without building the frontend
-curl http://localhost:8080/healthz   # {"status":"ok"}
+curl http://localhost:8080/healthz   # {"status":"ok","version":"1.0.0+sha.xxx"} (confirm build version)
 ```
 
 ## 3. Code Map
 
 ```
 main.go        Entry: wires Config/Storage/Store/Hub, CSP security headers, /healthz, graceful shutdown
+version.go     Build version info (injected via -ldflags) + /healthz health check (with version)
 config.go      Environment variables → Config struct (JWT_SECRET auto-generated to <DataDir>/.jwt_secret when empty)
 session.go     Session cookie (HMAC token, 7 days) + CSRF (sameOrigin) + requireUser/requireRole
 user.go        Login/register (3 registration modes)/user management + login rate limiting + storage test endpoint
@@ -329,14 +330,26 @@ Please add end-to-end tests for new features following the existing `newTestAPI`
 ./scripts/build-linux.sh amd64          # → dist/course-hub-linux-amd64 (use build-linux.ps1 on Windows)
 
 # Docker (multi-stage: frontend → static Go build → alpine runtime image with ffmpeg baked in)
-docker build -t course-hub .
+./scripts/docker-build.sh              # auto-generates the version and tags <version> + latest
+docker build -t course-hub .           # plain build also works; Dockerfile derives a version automatically
 
-# Release a new version: tag it and CI builds/pushes images to GHCR automatically (semver tags + latest)
+# Release a new version: bump web/package.json version → commit → tag; CI builds/pushes images
 git tag v1.1.0 && git push origin v1.1.0
 ```
 
-- CI (`.github/workflows/ci.yml`): **builds the frontend first** (go:embed depends on it) → gofmt check → go vet → go test → go build. Run `gofmt -w .` locally before committing to keep CI green.
-- `docker.yml` builds amd64+arm64 images and pushes them to GHCR on pushes to main / `v*` tags (`latest` + semver tags).
+### Versioning (generated on every build)
+
+- **Single source of truth**: `version` in `web/package.json` — bump it when releasing (`cd web && pnpm version patch/minor/major` works too).
+- **Generator**: `scripts/version.sh` reads package.json + `git rev-parse --short HEAD`:
+  - display version: `1.0.0+sha.6f179c0` (adds `.dirty` for uncommitted changes; uses a build timestamp when there is no `.git`)
+  - image tag: `1.0.0-sha-6f179c0` (characters Docker forbids, e.g. `+`, are replaced)
+  - also supports `commit` / `base` (`scripts/version.sh commit|base`)
+- **Injection**: at build time `-ldflags "-X main.version=... -X main.commit=... -X main.buildTime=..."` fills the variables in `version.go` (done by the Dockerfile, `build-linux.sh`, `build-linux.ps1` and CI).
+- **Where to see it**: startup log, `GET /healthz`, `GET /api/config`, login-page footer, user menu.
+- CI prints the version and pull command in the Actions summary; images keep both the version tag and `latest` (default branch only).
+
+- CI (`.github/workflows/ci.yml`): **builds the frontend first** (go:embed depends on it) → resolves version → gofmt check → go vet → go test → go build. Run `gofmt -w .` locally before committing to keep CI green.
+- `docker.yml` builds amd64+arm64 images and pushes them to GHCR on pushes to main / `v*` tags (`<version>-sha-<commit>` + `latest` + semver tags).
 
 ## 11. Safety Rules (Must Follow When Changing Code)
 

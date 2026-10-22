@@ -13,6 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本号统一由 scripts/version.sh 从 web/package.json + git 提交生成，
+      # 这里先跑一遍，顺便在 CI 日志里打出本次构建版本
+      - name: 解析版本号
+        run: |
+          echo "构建版本：$(sh scripts/version.sh full)"
+          echo "镜像标签：$(sh scripts/version.sh tag)"
+
       # 前端产物会被 go:embed 打进二进制，必须先构建前端，
       # 否则 go vet / go test 会报 "pattern all:web/dist: no matching files found"
       - uses: pnpm/action-setup@v4

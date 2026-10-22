@@ -167,7 +167,7 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request, u *User) {
 	writeJSON(w, http.StatusOK, u)
 }
 
-// 公开配置（登录页用）
+// 公开配置（登录页用；version 用于在页面上显示当前部署的构建版本）
 func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 	st := a.db.GetSettings()
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -175,6 +175,9 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"register_mode":  st.RegisterMode,
 		"allow_register": st.RegisterMode != "closed",
 		"need_invite":    st.RegisterMode == "invite",
+		"version":        version,
+		"commit":         commit,
+		"build_time":     buildTime,
 	})
 }
 

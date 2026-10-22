@@ -18,6 +18,7 @@ const cfg = computed(() => store.config || {})
 const canRegister = computed(() => cfg.value.allow_register !== false)
 const needInvite = computed(() => cfg.value.need_invite === true)
 const siteName = computed(() => cfg.value.site_name || '课程中心')
+const version = computed(() => cfg.value.version || '')
 const modeLabel = computed(() => ({
   open: '开放注册',
   invite: '邀请码注册',
@@ -113,6 +114,8 @@ async function submit() {
           <template v-else-if="!canRegister">本站已关闭自助注册，请联系机构管理员开通账号。</template>
           <template v-else>忘记密码？请联系机构管理员在后台重置。</template>
         </p>
+
+        <p v-if="version" class="login-version">版本 {{ version }}</p>
       </form>
     </section>
   </div>

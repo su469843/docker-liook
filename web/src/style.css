@@ -116,6 +116,7 @@ img { max-width: 100%; }
 }
 .dropdown-menu a:hover, .dropdown-menu button:hover { background: var(--line-2); color: var(--text); }
 .dropdown-menu .divider { height: 1px; background: var(--line); margin: 4px 6px; }
+.menu-version { padding: 6px 12px; font-size: 12px; color: var(--text-3); }
 
 /* ================= 布局 ================= */
 .main { min-height: calc(100vh - var(--header-h)); }
@@ -574,6 +575,7 @@ table.table tr:hover td { background: #fcfdfd; }
 .login-tabs button { flex: 1; border: none; background: none; padding: 9px; border-radius: 8px; cursor: pointer; color: var(--text-2); font-size: 14px; }
 .login-tabs button.active { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, .08); }
 .login-tip { margin-top: 18px; font-size: 12.5px; color: var(--text-3); line-height: 1.7; }
+.login-version { margin-top: 20px; text-align: center; font-size: 11.5px; color: var(--text-3); }
 
 /* ================= 动画 ================= */
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }

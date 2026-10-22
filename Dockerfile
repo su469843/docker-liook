@@ -22,14 +22,28 @@ FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 # 国内网络可换成 https://goproxy.cn,https://proxy.golang.org,direct
 ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
 ARG TARGETARCH
+# 构建版本信息：CI / scripts/docker-build.sh 会传进来；
+# 不传时自动从 web/package.json + 构建时间生成（保证每次构建都有唯一版本号）
+ARG VERSION=
+ARG COMMIT=
+ARG BUILD_DATE=
 WORKDIR /src
 ENV CGO_ENABLED=0 GOOS=linux GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /app/dist ./web/dist
-# TARGETARCH 由 BuildKit 注入（amd64 / arm64），未指定时用构建机架构
-RUN GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/course-hub .
+# TARGETARCH 由 BuildKit 注入（amd64 / arm64），未指定时用构建机架构。
+# 版本号通过 -ldflags 写进二进制：GET /healthz、启动日志、页面底部都能看到。
+RUN set -eu; \
+    app_version="${VERSION:-}"; \
+    [ -n "$app_version" ] || app_version="$(sh scripts/version.sh full)"; \
+    app_commit="${COMMIT:-}"; \
+    [ -n "$app_commit" ] || app_commit="$(sh scripts/version.sh commit)"; \
+    app_build_date="${BUILD_DATE:-unknown}"; \
+    GOARCH=${TARGETARCH:-amd64} go build -trimpath \
+      -ldflags="-s -w -X main.version=${app_version} -X main.commit=${app_commit} -X main.buildTime=${app_build_date}" \
+      -o /out/course-hub .
 
 # ---------- 3. 运行镜像 ----------
 FROM alpine:3.20

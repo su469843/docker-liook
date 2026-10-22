@@ -95,12 +95,8 @@ func main() {
 	mux := http.NewServeMux()
 	api.routes(mux)
 
-	// 健康检查（Docker HEALTHCHECK / 负载均衡探针用，不需要鉴权）
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
+	// 健康检查（Docker HEALTHCHECK / 负载均衡探针用，不需要鉴权，响应里带构建版本）
+	mux.HandleFunc("GET /healthz", handleHealthz)
 
 	sub, err := fs.Sub(webDist, "web/dist")
 	if err != nil {
@@ -164,8 +160,8 @@ func main() {
 		}
 	}()
 
-	log.Printf("CourseHub 启动: http://localhost:%s （站点: %s，存储: %s）",
-		cfg.Port, settings.SiteName, cfg.StorageType)
+	log.Printf("CourseHub %s 启动: http://localhost:%s （站点: %s，存储: %s，提交: %s）",
+		version, cfg.Port, settings.SiteName, cfg.StorageType, commit)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

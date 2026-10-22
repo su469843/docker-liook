@@ -5,7 +5,7 @@ import { api } from './api'
 export const store = reactive({
   user: null,
   loaded: false,
-  config: { site_name: '课程中心', register_mode: 'open', allow_register: true, need_invite: false },
+  config: { site_name: '课程中心', register_mode: 'open', allow_register: true, need_invite: false, version: '', commit: '' },
   online: [],
   unreadPrivate: 0,
   unreadGroup: 0

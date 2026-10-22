@@ -177,12 +177,23 @@ docker compose logs -f
 
 镜像约 **50MB**（alpine + 静态二进制），常驻内存几十 MB；2G 内存的小机器绰绰有余（建议加 1G swap：`fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`）。
 
+### 版本号（每次构建自动生成）
+
+版本号以 [`web/package.json`](web/package.json) 的 `version` 字段为**唯一来源**（发版时改这里），构建时由 [`scripts/version.sh`](scripts/version.sh) 自动叠加 git 提交号，所以每次构建出来的东西都有独立版本号，不用只认 `latest`：
+
+- 应用内完整版本：`1.0.0+sha.6f179c0`（工作区有未提交改动时带 `.dirty`）
+- Docker 镜像标签：`1.0.0-sha-6f179c0`（CI 每次构建都会推；`latest` 只是默认分支的别名）
+- 查看线上版本：`curl http://127.0.0.1:8080/healthz`、登录页底部、右上角用户菜单底部
+- 升级 / 回滚到指定版本：`IMAGE=ghcr.io/<你的GitHub用户名>/<仓库名>:1.0.0-sha-6f179c0 docker compose pull && docker compose up -d`
+- 本地手动打镜像建议用 `./scripts/docker-build.sh`（自动生成版本号并打上 `<版本>` + `latest` 两个标签）
+
 ### 方式二：用 CI 构建好的镜像（GHCR / 自己的镜像仓库）
 
 推送到 GitHub 后，`.github/workflows/docker.yml` 会自动构建 **linux/amd64 + linux/arm64** 双架构镜像并推到 GitHub 容器仓库：
 
 ```
 ghcr.io/<你的GitHub用户名>/<仓库名>:latest
+ghcr.io/<你的GitHub用户名>/<仓库名>:1.0.0-sha-6f179c0   # 每次构建自动生成的版本标签
 ```
 
 服务器上不需要装 Go / Node，只要 Docker：
@@ -191,8 +202,9 @@ ghcr.io/<你的GitHub用户名>/<仓库名>:latest
 # 公共镜像可直接拉；私有镜像先登录（密码用 GitHub PAT，勾选 read:packages）
 echo <你的PAT> | docker login ghcr.io -u <GitHub用户名> --password-stdin
 
-IMAGE=ghcr.io/<你的GitHub用户名>/<仓库名>:latest docker compose pull
-IMAGE=ghcr.io/<你的GitHub用户名>/<仓库名>:latest docker compose up -d
+# 想稳定就拉具体版本（推荐），想跟最新就用 latest
+IMAGE=ghcr.io/<你的GitHub用户名>/<仓库名>:1.0.0-sha-6f179c0 docker compose pull
+IMAGE=ghcr.io/<你的GitHub用户名>/<仓库名>:1.0.0-sha-6f179c0 docker compose up -d
 ```
 
 推送到别的镜像仓库（阿里云 ACR、Docker Hub、私有 Harbor 都一样）：
@@ -203,7 +215,7 @@ docker login registry.cn-hangzhou.aliyuncs.com
 docker push registry.cn-hangzhou.aliyuncs.com/<命名空间>/course-hub:latest
 ```
 
-> 本机不想装 Docker：直接把代码推到 GitHub，让 Actions 构建推送即可，服务器只负责 `docker pull`。
+> 本机不想装 Docker：直接把代码推到 GitHub，让 Actions 构建推送即可，服务器只负责 `docker pull`。构建日志的 Summary 里会打印本次版本号和对应的拉取命令。
 
 ### 方式三：不用 Docker，直接跑二进制（systemd）
 
@@ -235,7 +247,7 @@ sudo journalctl -u course-hub -f
 
 ### 健康检查与优雅停机
 
-- `GET /healthz` → `200 {"status":"ok"}`（不需要登录），Docker 镜像已内置 `HEALTHCHECK`。
+- `GET /healthz` → `200 {"status":"ok","version":"1.0.0+sha.6f179c0","commit":"6f179c0","build_time":"2025-10-22T13:06:00Z"}`（不需要登录，可用来确认线上版本），Docker 镜像已内置 `HEALTHCHECK`。
 - 收到 `SIGTERM`（`docker stop` / `systemctl stop`）时会先停止接收新请求、等待进行中的请求结束再关闭 SQLite，不会丢正在写入的数据。
 
 ### 忘记管理员密码 / 登录不上
@@ -294,7 +306,8 @@ go run .
 |---|---|---|
 | `PORT` | 容器内监听端口（一般不用改） | `8080` |
 | `HOST_PORT` | docker compose 映射到宿主机的端口 | `8080` |
-| `IMAGE` | docker compose 使用的镜像名（从镜像仓库拉取时指定） | `course-hub:latest` |
+| `IMAGE` | docker compose 使用的镜像名（从镜像仓库拉取时指定，可写具体版本标签） | `course-hub:latest` |
+| `VERSION` / `COMMIT` / `BUILD_DATE` | 构建时注入的版本信息（`docker compose build` 用；留空自动从 `web/package.json` + git 生成） | 自动生成 |
 | `ADMIN_PASSWORD` | **首次初始化**创建 admin 账号的初始密码 | `admin123` |
 | `JWT_SECRET` | 会话签名密钥。留空会自动生成并持久化到数据目录 `.jwt_secret`（重启不会掉登录）；**多实例部署必须显式指定同一个值** | 自动生成 |
 | `SITE_NAME` | 站点名称（首次初始化写入数据库，之后在后台改） | `课程中心` |
@@ -429,6 +442,7 @@ POST   /api/users/:id/password        重置密码（管理员）
 
 ```
 main.go        入口：配置、存储、数据库、静态资源嵌入、健康检查、优雅停机
+version.go     构建版本信息（脚本注入）+ /healthz 健康检查
 config.go      环境变量（JWT_SECRET 缺省时自动生成并持久化）
 session.go     Cookie 会话 + CSRF + 鉴权中间件
 user.go        登录/注册（三种注册模式）/用户管理 + 登录限流
@@ -441,6 +455,7 @@ chat.go        WebSocket Hub：私聊 + 课程群聊（引用时间点）+ 通�
 sanitize.go    图文课时 HTML 白名单清洗（防 XSS）
 ws_test.go     端到端测试
 practice_test.go      作业/练习/打卡：判分单测 + 端到端接口测试
+version_test.go       /healthz 版本信息测试
 web/           Vue 3 前端（Vite）：市场 / 我的课程 / 学习页 / 教学中心 / 练习中心 / 后台管理
   src/style.css    小鹅通风格设计系统
   src/components/  VideoPlayer(课件播放) / RichEditor(图文) / GroupChat(课程群) / Modal / Toast…
@@ -452,7 +467,7 @@ docker-compose.yml     一键部署（支持 --build 或拉取镜像仓库镜像
 .github/workflows/     ci.yml（测试）与 docker.yml（多架构镜像推送 GHCR）
 deploy/                systemd unit 与环境变量模板（不用 Docker 时）
 docs/                  文档：部署指南（DEPLOYMENT.md）与二次开发指南（DEVELOPMENT.md），均有中英文版
-scripts/               交叉编译 Linux 二进制的脚本（.ps1 / .sh）
+scripts/               版本号计算（version.sh）与构建脚本：交叉编译 Linux 二进制、打带版本号的镜像
 ```
 
 ## 🖥️ 界面速览

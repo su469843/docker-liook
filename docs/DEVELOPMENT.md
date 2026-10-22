@@ -71,13 +71,14 @@ cd .. && go build .      # 单个静态二进制，前端已嵌入
 
 ```bash
 go test -tags noembed ./...   # 不构建前端也能跑后端测试
-curl http://localhost:8080/healthz   # {"status":"ok"}
+curl http://localhost:8080/healthz   # {"status":"ok","version":"1.0.0+sha.xxx"}（确认构建版本）
 ```
 
 ## 3. 代码地图
 
 ```
 main.go        入口：装配 Config/Storage/Store/Hub、CSP 安全头、/healthz、优雅停机
+version.go     构建版本信息（-ldflags 注入）+ /healthz 健康检查（带版本）
 config.go      环境变量 → Config 结构体（JWT_SECRET 缺省自动生成到 <DataDir>/.jwt_secret）
 session.go     会话 Cookie（HMAC token，7 天）+ CSRF（sameOrigin）+ requireUser/requireRole
 user.go        登录/注册/三档注册模式/用户管理 + 登录限流 + 存储配置测试接口
@@ -332,14 +333,26 @@ go test -run TestRBAC -v ./...   # 单跑某个
 ./scripts/build-linux.sh amd64          # → dist/course-hub-linux-amd64（Windows 用 build-linux.ps1）
 
 # Docker（多阶段：前端 → Go 静态编译 → alpine 运行镜像，内置 ffmpeg）
-docker build -t course-hub .
+./scripts/docker-build.sh              # 自动生成版本号，打 <版本> + latest 两个标签
+docker build -t course-hub .           # 裸构建也行，版本号由 Dockerfile 自动兜底生成
 
-# 发布新版本：打 tag 后 CI 自动构建镜像并推 GHCR（semver 标签 + latest）
+# 发布新版本：改 web/package.json 的 version → 提交 → 打 tag，CI 自动构建镜像并推 GHCR
 git tag v1.1.0 && git push origin v1.1.0
 ```
 
-- CI（`.github/workflows/ci.yml`）：**先构建前端**（embed 依赖它）→ gofmt 格式检查 → go vet → go test → go build。提交前本地跑 `gofmt -w .` 可避免 CI 挂。
-- `docker.yml` 在 push main / `v*` tag 时构建 amd64+arm64 镜像推 GHCR（`latest` + semver 标签）。
+### 版本号机制（每次构建自动生成）
+
+- **唯一版本源**：`web/package.json` 的 `version`，发版时改它（也可 `cd web && pnpm version patch/minor/major`）。
+- **生成脚本**：`scripts/version.sh` 读 package.json + `git rev-parse --short HEAD`：
+  - 展示版本：`1.0.0+sha.6f179c0`（有未提交改动追加 `.dirty`；没有 `.git` 时用构建时间戳）
+  - 镜像标签：`1.0.0-sha-6f179c0`（`+` 等 Docker 不允许的字符会被替换）
+  - 也可单独取 `commit` / `base`（`scripts/version.sh commit|base`）
+- **注入方式**：构建时 `-ldflags "-X main.version=... -X main.commit=... -X main.buildTime=..."` 写进 `version.go` 的变量（Dockerfile、`build-linux.sh`、`build-linux.ps1`、CI 都是这样做的）。
+- **查看方式**：启动日志、`GET /healthz`、`GET /api/config`、登录页底部、右上角用户菜单。
+- CI 会在 Actions Summary 里打印本次版本与拉取命令；镜像除版本标签外仍保留 `latest`（仅默认分支）。
+
+- CI（`.github/workflows/ci.yml`）：**先构建前端**（embed 依赖它）→ 解析版本号 → gofmt 格式检查 → go vet → go test → go build。提交前本地跑 `gofmt -w .` 可避免 CI 挂。
+- `docker.yml` 在 push main / `v*` tag 时构建 amd64+arm64 镜像推 GHCR（`<版本>-sha-<提交>` + `latest` + semver 标签）。
 
 ## 11. 安全红线（改代码必须遵守）
 

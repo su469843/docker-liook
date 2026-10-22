@@ -5,11 +5,21 @@
 #   2) 拉取镜像仓库里的镜像：IMAGE=ghcr.io/你的用户名/course-hub:latest docker compose pull
 #                            IMAGE=ghcr.io/你的用户名/course-hub:latest docker compose up -d
 #
+# 镜像除了 latest，每次构建都会带版本号标签（如 1.0.0-sha-6f179c0），
+# 升级/回滚时把 IMAGE 换成具体版本即可，配合 `GET /healthz` 确认线上版本。
+#
 # 配置写在同目录的 .env 里（参考 .env.example），compose 会自动读取。
 
 services:
   course-hub:
-    build: .
+    build:
+      context: .
+      # 版本信息（可选）：留空则 Dockerfile 自动从 web/package.json + 构建时间生成，
+      # 可通过 `echo "VERSION=1.0.0-sha-xxxx" >> .env` 固定成指定版本
+      args:
+        VERSION: ${VERSION:-}
+        COMMIT: ${COMMIT:-}
+        BUILD_DATE: ${BUILD_DATE:-}
     image: ${IMAGE:-course-hub:latest}
     container_name: course-hub
     restart: unless-stopped

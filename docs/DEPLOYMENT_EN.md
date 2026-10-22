@@ -164,7 +164,7 @@ docker compose up -d --build
 
 # 5. Verify
 docker compose ps        # STATUS shows (healthy) means normal
-curl http://127.0.0.1:8080/healthz   # → {"status":"ok"}
+curl http://127.0.0.1:8080/healthz   # → {"status":"ok","version":"1.0.0+sha.6f179c0",...}; version = current build
 docker compose logs -f   # View logs, Ctrl+C to exit
 ```
 
@@ -194,7 +194,10 @@ After pushing to GitHub, `.github/workflows/docker.yml` will automatically build
 
 ```
 ghcr.io/su469843/docker-liook:latest
+ghcr.io/su469843/docker-liook:1.0.0-sha-6f179c0   # version tag generated on every build
 ```
+
+> **Where the version comes from**: the base version is `version` in `web/package.json` (bump it when releasing), and the build appends the git commit via `scripts/version.sh`. CI pushes a `<version>-sha-<commit>` tag on every build while keeping `latest`. Pin production to a concrete tag — upgrade and rollback are just a different tag in `IMAGE`. The build version is shown in the Actions summary, at `/healthz`, in the login-page footer and in the user menu.
 
 ```bash
 git clone https://github.com/su469843/docker-liook.git
@@ -202,9 +205,9 @@ cd docker-liook
 
 cp .env.example .env && vi .env      # Same as above, at least change ADMIN_PASSWORD
 
-# Pull image and start (IMAGE variable determines which image compose uses)
-IMAGE=ghcr.io/su469843/docker-liook:latest docker compose pull
-IMAGE=ghcr.io/su469843/docker-liook:latest docker compose up -d
+# Pull image and start (IMAGE variable determines which image compose uses; pinned to a version here)
+IMAGE=ghcr.io/su469843/docker-liook:1.0.0-sha-6f179c0 docker compose pull
+IMAGE=ghcr.io/su469843/docker-liook:1.0.0-sha-6f179c0 docker compose up -d
 ```
 
 - If image is private, log in first (password uses GitHub PAT, check `read:packages`):
@@ -218,7 +221,7 @@ IMAGE=ghcr.io/su469843/docker-liook:latest docker compose up -d
   # On server: IMAGE=registry.cn-hangzhou.aliyuncs.com/<namespace>/course-hub:latest docker compose up -d
   ```
 
-> If you don't want to install Docker on local machine: push code to GitHub and let GitHub Actions build, server only `docker pull`.
+> If you don't want to install Docker on local machine: push code to GitHub and let GitHub Actions build, server only `docker pull`. The workflow summary prints the version of this build and the matching `docker pull ...:<version>` command.
 
 ---
 
@@ -318,7 +321,7 @@ Caddy natively supports WebSocket and `X-Forwarded-For`, no extra configuration 
 - [ ] Reverse proxy forwards `/`, `/api`, `/hls`, `/files`, `/ws` to 8080 (config above already covers)
 - [ ] Change `.env` to `COOKIE_SECURE=true`, then `docker compose up -d` to rebuild
 - [ ] Nginx `client_max_body_size` ≥ upload limit; Caddy default no limit
-- [ ] Visit with `https://` to confirm lock icon; `curl https://domain/healthz` returns `{"status":"ok"}`
+- [ ] Visit with `https://` to confirm lock icon; `curl https://domain/healthz` returns `{"status":"ok","version":"..."}`
 
 ---
 
@@ -406,7 +409,9 @@ git pull
 docker compose up -d --build      # Or docker compose pull && docker compose up -d
 ```
 
-Data directory will automatically migrate; it's recommended to backup `./data` before upgrading.
+- Data directory migrates automatically; back up `./data` before upgrading.
+- After upgrading, run `curl http://127.0.0.1:8080/healthz` and confirm `version` changed; the login-page footer / user menu also show the running build.
+- With CI images, **pin a concrete version** instead of `latest`; rolling back is just changing the tag in `IMAGE` and running `docker compose up -d` (see section 4).
 
 ### Forgot Admin Password
 

@@ -164,7 +164,7 @@ docker compose up -d --build
 
 # 5. 验证
 docker compose ps        # STATUS 出现 (healthy) 即正常
-curl http://127.0.0.1:8080/healthz   # → {"status":"ok"}
+curl http://127.0.0.1:8080/healthz   # → {"status":"ok","version":"1.0.0+sha.6f179c0",...}，version 即当前构建版本
 docker compose logs -f   # 看日志，Ctrl+C 退出
 ```
 
@@ -194,7 +194,10 @@ sudo chown -R 10001:10001 ./data
 
 ```
 ghcr.io/su469843/docker-liook:latest
+ghcr.io/su469843/docker-liook:1.0.0-sha-6f179c0   # 每次构建自动生成的版本标签
 ```
+
+> **版本号从哪来**：主版本取 `web/package.json` 的 `version`（发版改这里），构建时由 `scripts/version.sh` 自动叠加 git 提交号；CI 每次构建都会推 `<版本>-sha-<提交>` 标签并保留 `latest`。生产环境建议固定到具体版本，升级 / 回滚都只改 `IMAGE` 里的标签；本次构建版本会打在 Actions 的 Summary 里，线上可用 `/healthz`、登录页底部、右上角用户菜单确认。
 
 ```bash
 git clone https://github.com/su469843/docker-liook.git
@@ -202,9 +205,9 @@ cd docker-liook
 
 cp .env.example .env && vi .env      # 同上，至少改 ADMIN_PASSWORD
 
-# 拉镜像并启动（IMAGE 变量决定 compose 用哪个镜像）
-IMAGE=ghcr.io/su469843/docker-liook:latest docker compose pull
-IMAGE=ghcr.io/su469843/docker-liook:latest docker compose up -d
+# 拉镜像并启动（IMAGE 变量决定 compose 用哪个镜像；示例固定到具体版本）
+IMAGE=ghcr.io/su469843/docker-liook:1.0.0-sha-6f179c0 docker compose pull
+IMAGE=ghcr.io/su469843/docker-liook:1.0.0-sha-6f179c0 docker compose up -d
 ```
 
 - 镜像若是私有的，先登录（密码用 GitHub PAT，勾 `read:packages`）：
@@ -218,7 +221,7 @@ IMAGE=ghcr.io/su469843/docker-liook:latest docker compose up -d
   # 服务器上：IMAGE=registry.cn-hangzhou.aliyuncs.com/<命名空间>/course-hub:latest docker compose up -d
   ```
 
-> 本机不想装 Docker：代码推到 GitHub 让 Actions 构建，服务器只 `docker pull`。
+> 本机不想装 Docker：代码推到 GitHub 让 Actions 构建，服务器只 `docker pull`。构建完成后 Actions 的 Summary 会给出本次版本号和对应的 `docker pull ...:<版本>` 命令。
 
 ---
 
@@ -318,7 +321,7 @@ Caddy 原生支持 WebSocket 与 `X-Forwarded-For`，无需额外配置。
 - [ ] 反代把 `/`、`/api`、`/hls`、`/files`、`/ws` 都转发到 8080（上面配置已覆盖）
 - [ ] `.env` 改 `COOKIE_SECURE=true`，然后 `docker compose up -d` 重建
 - [ ] Nginx `client_max_body_size` ≥ 上传上限；Caddy 默认不限
-- [ ] 用 `https://` 访问确认锁图标；`curl https://域名/healthz` 返回 `{"status":"ok"}`
+- [ ] 用 `https://` 访问确认锁图标；`curl https://域名/healthz` 返回 `{"status":"ok","version":"..."}`
 
 ---
 
@@ -406,7 +409,9 @@ git pull
 docker compose up -d --build      # 或 docker compose pull && docker compose up -d
 ```
 
-数据目录会自动迁移，升级前建议先备份 `./data`。
+- 数据目录会自动迁移，升级前建议先备份 `./data`。
+- 升级完用 `curl http://127.0.0.1:8080/healthz` 确认 `version` 已变化；登录页底部 / 右上角用户菜单也能看到当前构建版本。
+- 用 CI 镜像时建议**固定到具体版本**而不是 `latest`，回滚只需把 `IMAGE` 换成旧版本标签再 `docker compose up -d`（见第 4 节）。
 
 ### 忘记 admin 密码
 

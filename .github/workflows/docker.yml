@@ -2,7 +2,9 @@ name: Docker
 
 # 推送到 main / 打 tag 时自动构建镜像并推送到 GitHub 容器仓库（GHCR）
 # 镜像地址：ghcr.io/<你的GitHub用户名>/<仓库名>:latest
-# 服务器上直接：docker pull ghcr.io/<用户名>/<仓库名>:latest
+# 每次构建还会自动生成版本标签：<web/package.json 版本>-sha-<提交号>（见 scripts/version.sh），
+# 服务器上可以拉指定版本，而不是只能用 latest：
+#   docker pull ghcr.io/<用户名>/<仓库名>:1.0.0-sha-6f179c0
 
 on:
   push:
@@ -24,6 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本号 = web/package.json 的 version + 本次提交（详见 scripts/version.sh）
+      # 这样每次构建出的镜像都有唯一版本标签，而不是只能拉 latest
+      - name: 解析版本号（web/package.json + git 提交）
+        id: version
+        run: |
+          echo "full=$(sh scripts/version.sh full)" >> "$GITHUB_OUTPUT"
+          echo "tag=$(sh scripts/version.sh tag)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(sh scripts/version.sh commit)" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: 启用 QEMU（构建 arm64 镜像用）
         uses: docker/setup-qemu-action@v3
 
@@ -43,6 +55,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
+            type=raw,value=${{ steps.version.outputs.tag }}
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -58,7 +71,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ steps.version.outputs.full }}
+            COMMIT=${{ steps.version.outputs.commit }}
+            BUILD_DATE=${{ steps.version.outputs.build_time }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -67,11 +82,13 @@ jobs:
           {
             echo "### 镜像已推送 ✅"
             echo ""
+            echo "版本：\`${{ steps.version.outputs.full }}\`（提交 \`${{ steps.version.outputs.commit }}\`）"
+            echo ""
             echo '```'
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
             echo ""
-            echo "拉取：\`docker pull ${{ env.REGISTRY }}/${{ github.repository }}:latest\`"
+            echo "固定到此版本：\`docker pull ${{ env.REGISTRY }}/${{ github.repository }}:${{ steps.version.outputs.tag }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # 想同时推到 Docker Hub / 阿里云 ACR 等仓库时，取消下面的注释并按需修改：
