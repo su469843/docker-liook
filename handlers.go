@@ -30,6 +30,9 @@ type API struct {
 
 	// 通用限流（注册 / 登录 IP / 聊天 / 信令）
 	rl *rateLimiter
+
+	// TTS 朗读音频缓存（/api/tts 代理用，惰性初始化）
+	ttsC *ttsCache
 }
 
 // rate 惰性初始化限流器（测试构造 API 时可能没显式赋值）
@@ -38,6 +41,14 @@ func (a *API) rate() *rateLimiter {
 		a.rl = newRateLimiter()
 	}
 	return a.rl
+}
+
+// tts 惰性初始化朗读音频缓存
+func (a *API) tts() *ttsCache {
+	if a.ttsC == nil {
+		a.ttsC = &ttsCache{items: map[string][]byte{}}
+	}
+	return a.ttsC
 }
 
 func (a *API) routes(mux *http.ServeMux) {
@@ -112,6 +123,7 @@ func (a *API) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/practices/{id}/files", a.requireUser(a.handleUploadPracticeFile))
 	mux.HandleFunc("GET /api/practice-files/{key...}", a.requireUser(a.handleServePracticeFile))
 	mux.HandleFunc("GET /api/question-bank", a.requireRole(a.handleQuestionBank, "teacher", "admin"))
+	mux.HandleFunc("GET /api/tts", a.requireUser(a.handleTTS))
 	mux.HandleFunc("GET /api/practices/{id}/submissions", a.requireUser(a.handleListPracticeSubmissions))
 	mux.HandleFunc("POST /api/practices/{id}/submissions/{sid}/grade", a.requireUser(a.handleGradePracticeSubmission))
 	// 严格模式 / 监考（开始答题、离开事件上报、老师监考台、抓拍与语音评语）

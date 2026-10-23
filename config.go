@@ -37,6 +37,11 @@ type Config struct {
 	TurnPass      string
 	TurnSecret    string // coturn use-auth-secret 的共享密钥：配置后下发短时效临时账号，避免 TURN 被白嫖
 
+	TTSURL   string  // 自建 TTS（OpenAI 兼容 POST /v1/audio/speech）端点；配置后前端朗读走 /api/tts 代理，API key 不进前端
+	TTSKey   string  // TTS 端点的 Bearer key（Worker 未设 API_KEY 时可留空）
+	TTSVoice string  // 朗读音色（Edge 音色名，如 en-US-AriaNeural）
+	TTSSpeed float64 // 朗读语速 0.5-2.0，默认 0.9（跟读稍慢更清楚）
+
 	DisableCSP bool // 排障用：设 true 关闭 Content-Security-Policy（默认开启）
 
 	FFmpegPath   string // 服务端转码 HLS 用的 ffmpeg 可执行文件（默认 ffmpeg）
@@ -67,6 +72,10 @@ func LoadConfig() *Config {
 		TurnUser:      getenv("TURN_USER", ""),
 		TurnPass:      getenv("TURN_PASS", ""),
 		TurnSecret:    os.Getenv("TURN_SECRET"),
+		TTSURL:        strings.TrimSpace(os.Getenv("TTS_URL")),
+		TTSKey:        os.Getenv("TTS_KEY"),
+		TTSVoice:      getenv("TTS_VOICE", "en-US-AriaNeural"),
+		TTSSpeed:      getenvFloat("TTS_SPEED", 0.9),
 		DisableCSP:    getenv("CSP_DISABLE", "false") == "true",
 		FFmpegPath:    getenv("FFMPEG_PATH", "ffmpeg"),
 		MaxUploadMB:   getenvInt("MAX_UPLOAD_MB", 4096),
@@ -133,6 +142,15 @@ func getenvInt(k string, def int) int {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
+		}
+	}
+	return def
+}
+
+func getenvFloat(k string, def float64) float64 {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 2 {
+			return f
 		}
 	}
 	return def

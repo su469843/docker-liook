@@ -175,6 +175,7 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"register_mode":  st.RegisterMode,
 		"allow_register": st.RegisterMode != "closed",
 		"need_invite":    st.RegisterMode == "invite",
+		"tts":            a.cfg != nil && a.cfg.TTSURL != "",
 		"version":        version,
 		"commit":         commit,
 		"build_time":     buildTime,

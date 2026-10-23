@@ -72,6 +72,11 @@ services:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-4096}
       SIGN_TTL_MINUTES: ${SIGN_TTL_MINUTES:-120}
       TRANSCODE_CONCURRENCY: ${TRANSCODE_CONCURRENCY:-2}
+      # 朗读（TTS）代理（可选）：配了之后前端 🔊 走 /api/tts，API key 只在服务端，不进前端
+      TTS_URL: ${TTS_URL:-}
+      TTS_KEY: ${TTS_KEY:-}
+      TTS_VOICE: ${TTS_VOICE:-en-US-AriaNeural}
+      TTS_SPEED: ${TTS_SPEED:-0.9}
     volumes:
       # 数据库 + 上传的视频/聊天图片都放这里，备份目录即可
       - ./data:/data
