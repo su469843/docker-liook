@@ -463,7 +463,7 @@ async function removeCourse() {
       <div v-else-if="tab === 'students'" class="table-wrap">
         <table class="table">
           <thead>
-            <tr><th>学员</th><th>用户名</th><th>角色</th><th>加入方式</th><th>注册时间</th></tr>
+            <tr><th>学员</th><th>用户名</th><th>角色</th><th>加入方式</th><th>注册时间</th><th>私聊</th></tr>
           </thead>
           <tbody>
             <tr v-for="s in students" :key="s.id">
@@ -476,8 +476,11 @@ async function removeCourse() {
               <td><span class="pill blue">学员</span></td>
               <td class="muted">邀请码 / 课程市场</td>
               <td class="muted">{{ (s.created_at || '').slice(0, 10) }}</td>
+              <td>
+                <RouterLink :to="'/messages?peer=' + s.id" class="btn small ghost"><Icon name="chat" :size="13" /> 私聊</RouterLink>
+              </td>
             </tr>
-            <tr v-if="!students.length"><td colspan="5" class="muted center" style="padding:32px">还没有学员加入</td></tr>
+            <tr v-if="!students.length"><td colspan="6" class="muted center" style="padding:32px">还没有学员加入</td></tr>
           </tbody>
         </table>
       </div>

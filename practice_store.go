@@ -29,6 +29,8 @@ type Practice struct {
 	Deadline    string `json:"deadline"` // RFC3339，空 = 不限
 	Duration    int    `json:"duration"` // 建议用时（分钟），0 = 不限
 	Published   bool   `json:"published"`
+	AllowPhoto  bool   `json:"allow_photo"` // 允许拍照提交作业
+	AllowVoice  bool   `json:"allow_voice"` // 允许语音提交作业
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 
@@ -36,7 +38,9 @@ type Practice struct {
 	TotalScore     float64             `json:"total_score"`
 	SubmittedCount int64               `json:"submitted_count,omitempty"` // 老师视角
 	PendingCount   int64               `json:"pending_count,omitempty"`   // 老师视角：待批改份数
+	StudentCount   int64               `json:"student_count,omitempty"`   // 老师视角：课程学员数
 	CanManage      bool                `json:"can_manage,omitempty"`
+	Proctor        ProctorConfig       `json:"proctor"`              // 严格模式 / 监考配置
 	Submission     *PracticeSubmission `json:"submission,omitempty"` // 学员视角：我的提交摘要
 }
 
@@ -63,18 +67,24 @@ type QuestionAnswer struct {
 
 // PracticeSubmission 一次提交
 type PracticeSubmission struct {
-	ID          int64            `json:"id"`
-	PracticeID  int64            `json:"practice_id"`
-	StudentID   int64            `json:"student_id"`
-	StudentName string           `json:"student_name,omitempty"`
-	Answers     []QuestionAnswer `json:"answers"`
-	Score       float64          `json:"score"`
-	Total       float64          `json:"total"`
-	Status      string           `json:"status"` // submitted（待批改）| graded（已出分）
-	Graded      bool             `json:"graded"`
-	Comment     string           `json:"comment"`
-	SubmittedAt string           `json:"submitted_at"`
-	GradedAt    string           `json:"graded_at"`
+	ID          int64                `json:"id"`
+	PracticeID  int64                `json:"practice_id"`
+	StudentID   int64                `json:"student_id"`
+	StudentName string               `json:"student_name,omitempty"`
+	Answers     []QuestionAnswer     `json:"answers"`
+	Score       float64              `json:"score"`
+	Total       float64              `json:"total"`
+	Status      string               `json:"status"` // submitted（待批改）| graded（已出分）
+	Graded      bool                 `json:"graded"`
+	Comment     string               `json:"comment"`
+	Attachments []PracticeAttachment `json:"attachments"` // 拍照 / 语音附件
+	// Annotations 老师圈画批注：附件 key -> 图形列表（未批改时对学员不可见）
+	Annotations map[string][]AnnotationShape `json:"annotations,omitempty"`
+	// FeedbackAudio 老师语音评语（存储 key，出分后学员可播放）
+	FeedbackAudio         string  `json:"feedback_audio,omitempty"`
+	FeedbackAudioDuration float64 `json:"feedback_audio_duration,omitempty"`
+	SubmittedAt           string  `json:"submitted_at"`
+	GradedAt              string  `json:"graded_at"`
 }
 
 // Checkin 单词/句子打卡（每人每天 + 类型 + 课程 唯一）
@@ -128,6 +138,8 @@ CREATE TABLE IF NOT EXISTS practices(
   deadline TEXT NOT NULL DEFAULT '',
   duration INTEGER NOT NULL DEFAULT 0,
   published INTEGER NOT NULL DEFAULT 1,
+  allow_photo INTEGER NOT NULL DEFAULT 1,
+  allow_voice INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT ''
 );
@@ -154,6 +166,10 @@ CREATE TABLE IF NOT EXISTS practice_submissions(
   status TEXT NOT NULL DEFAULT 'submitted',
   graded INTEGER NOT NULL DEFAULT 0,
   comment TEXT NOT NULL DEFAULT '',
+  attachments TEXT NOT NULL DEFAULT '[]',
+  annotations TEXT NOT NULL DEFAULT '{}',
+  feedback_audio TEXT NOT NULL DEFAULT '',
+  feedback_audio_duration REAL NOT NULL DEFAULT 0,
   submitted_at TEXT NOT NULL,
   graded_at TEXT NOT NULL DEFAULT ''
 );
@@ -173,7 +189,10 @@ CREATE TABLE IF NOT EXISTS checkins(
 CREATE UNIQUE INDEX IF NOT EXISTS idx_checkins_unique ON checkins(user_id, day, kind, course_id);
 CREATE INDEX IF NOT EXISTS idx_checkins_user_day ON checkins(user_id, day);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ensurePracticeMediaSchema()
 }
 
 func boolInt(b bool) int {
@@ -191,7 +210,9 @@ SELECT p.id, p.course_id, COALESCE(c.title, ''), p.teacher_id, p.title, p.kind, 
        (SELECT COUNT(*) FROM practice_questions q WHERE q.practice_id = p.id),
        (SELECT COALESCE(SUM(q.score), 0) FROM practice_questions q WHERE q.practice_id = p.id),
        (SELECT COUNT(*) FROM practice_submissions s WHERE s.practice_id = p.id),
-       (SELECT COUNT(*) FROM practice_submissions s WHERE s.practice_id = p.id AND s.graded = 0)`
+       (SELECT COUNT(*) FROM practice_submissions s WHERE s.practice_id = p.id AND s.graded = 0),
+       (SELECT COUNT(*) FROM enrollments en WHERE en.course_id = p.course_id),
+       p.allow_photo, p.allow_voice`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -199,33 +220,39 @@ type scanner interface {
 
 func scanPractice(sc scanner) (Practice, error) {
 	var p Practice
-	var published int
+	var published, allowPhoto, allowVoice int
 	err := sc.Scan(&p.ID, &p.CourseID, &p.CourseTitle, &p.TeacherID, &p.Title, &p.Kind, &p.Subject,
 		&p.Description, &p.Deadline, &p.Duration, &published, &p.CreatedAt, &p.UpdatedAt,
-		&p.QuestionCount, &p.TotalScore, &p.SubmittedCount, &p.PendingCount)
+		&p.QuestionCount, &p.TotalScore, &p.SubmittedCount, &p.PendingCount, &p.StudentCount,
+		&allowPhoto, &allowVoice)
 	if err != nil {
 		return p, err
 	}
 	p.Published = published == 1
+	p.AllowPhoto = allowPhoto == 1
+	p.AllowVoice = allowVoice == 1
 	return p, nil
 }
 
 // scanPracticeWithSubmission 多 7 列：学员自己的提交摘要
 func scanPracticeWithSubmission(sc scanner) (Practice, error) {
 	var p Practice
-	var published int
+	var published, allowPhoto, allowVoice int
 	var subID sql.NullInt64
 	var subStatus, subAt, subComment sql.NullString
 	var subGraded sql.NullBool
 	var subScore, subTotal sql.NullFloat64
 	err := sc.Scan(&p.ID, &p.CourseID, &p.CourseTitle, &p.TeacherID, &p.Title, &p.Kind, &p.Subject,
 		&p.Description, &p.Deadline, &p.Duration, &published, &p.CreatedAt, &p.UpdatedAt,
-		&p.QuestionCount, &p.TotalScore, &p.SubmittedCount, &p.PendingCount,
+		&p.QuestionCount, &p.TotalScore, &p.SubmittedCount, &p.PendingCount, &p.StudentCount,
+		&allowPhoto, &allowVoice,
 		&subID, &subStatus, &subGraded, &subScore, &subTotal, &subAt, &subComment)
 	if err != nil {
 		return p, err
 	}
 	p.Published = published == 1
+	p.AllowPhoto = allowPhoto == 1
+	p.AllowVoice = allowVoice == 1
 	if subID.Valid {
 		p.Submission = &PracticeSubmission{
 			ID: subID.Int64, PracticeID: p.ID, Status: subStatus.String, Graded: subGraded.Bool,
@@ -273,9 +300,10 @@ func (s *Store) CreatePractice(p *Practice, qs []PracticeQuestion) (int64, error
 	}
 	defer tx.Rollback()
 	t := now()
-	res, err := tx.Exec(`INSERT INTO practices(course_id, teacher_id, title, kind, subject, description, deadline, duration, published, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		p.CourseID, p.TeacherID, p.Title, p.Kind, p.Subject, p.Description, p.Deadline, p.Duration, boolInt(p.Published), t, t)
+	res, err := tx.Exec(`INSERT INTO practices(course_id, teacher_id, title, kind, subject, description, deadline, duration, published, allow_photo, allow_voice, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		p.CourseID, p.TeacherID, p.Title, p.Kind, p.Subject, p.Description, p.Deadline, p.Duration,
+		boolInt(p.Published), boolInt(p.AllowPhoto), boolInt(p.AllowVoice), t, t)
 	if err != nil {
 		return 0, err
 	}
@@ -297,8 +325,9 @@ func (s *Store) UpdatePractice(p *Practice, qs []PracticeQuestion, withQuestions
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`UPDATE practices SET title = ?, kind = ?, subject = ?, description = ?, deadline = ?,
-		duration = ?, published = ?, updated_at = ? WHERE id = ?`,
-		p.Title, p.Kind, p.Subject, p.Description, p.Deadline, p.Duration, boolInt(p.Published), now(), p.ID); err != nil {
+		duration = ?, published = ?, allow_photo = ?, allow_voice = ?, updated_at = ? WHERE id = ?`,
+		p.Title, p.Kind, p.Subject, p.Description, p.Deadline, p.Duration, boolInt(p.Published),
+		boolInt(p.AllowPhoto), boolInt(p.AllowVoice), now(), p.ID); err != nil {
 		return err
 	}
 	if withQuestions {
@@ -434,24 +463,36 @@ func (s *Store) ListPracticesForStudent(studentID int64) ([]Practice, error) {
 
 // ---------------- 练习：提交与批改 ----------------
 
-const submissionSelect = `SELECT id, practice_id, student_id, answers, score, total, status, graded, comment, submitted_at, graded_at
+const submissionSelect = `SELECT id, practice_id, student_id, answers, score, total, status, graded, comment,
+	attachments, annotations, feedback_audio, feedback_audio_duration, submitted_at, graded_at
 	FROM practice_submissions`
 
 func scanSubmission(sc scanner) (PracticeSubmission, error) {
 	var sub PracticeSubmission
-	var answers string
+	var answers, attachments, annotations, feedbackAudio string
 	var graded int
 	err := sc.Scan(&sub.ID, &sub.PracticeID, &sub.StudentID, &answers, &sub.Score, &sub.Total,
-		&sub.Status, &graded, &sub.Comment, &sub.SubmittedAt, &sub.GradedAt)
+		&sub.Status, &graded, &sub.Comment, &attachments, &annotations,
+		&feedbackAudio, &sub.FeedbackAudioDuration, &sub.SubmittedAt, &sub.GradedAt)
 	if err != nil {
 		return sub, err
 	}
 	sub.Graded = graded == 1
+	sub.FeedbackAudio = feedbackAudio
 	if answers != "" {
 		_ = json.Unmarshal([]byte(answers), &sub.Answers)
 	}
 	if sub.Answers == nil {
 		sub.Answers = []QuestionAnswer{}
+	}
+	if attachments != "" {
+		_ = json.Unmarshal([]byte(attachments), &sub.Attachments)
+	}
+	if sub.Attachments == nil {
+		sub.Attachments = []PracticeAttachment{}
+	}
+	if annotations != "" && annotations != "{}" {
+		_ = json.Unmarshal([]byte(annotations), &sub.Annotations)
 	}
 	return sub, nil
 }
@@ -474,24 +515,48 @@ func (s *Store) GetSubmissionByID(id int64) (*PracticeSubmission, error) {
 
 func (s *Store) CreateSubmission(sub *PracticeSubmission) (int64, error) {
 	data, _ := json.Marshal(sub.Answers)
-	res, err := s.db.Exec(`INSERT INTO practice_submissions(practice_id, student_id, answers, score, total, status, graded, comment, submitted_at, graded_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		sub.PracticeID, sub.StudentID, string(data), sub.Score, sub.Total, sub.Status, boolInt(sub.Graded), sub.Comment, now(), "")
+	atts, _ := json.Marshal(sub.Attachments)
+	if sub.Attachments == nil {
+		atts = []byte("[]")
+	}
+	anns := []byte("{}")
+	if len(sub.Annotations) > 0 {
+		anns, _ = json.Marshal(sub.Annotations)
+	}
+	res, err := s.db.Exec(`INSERT INTO practice_submissions(practice_id, student_id, answers, score, total, status, graded, comment,
+		attachments, annotations, submitted_at, graded_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sub.PracticeID, sub.StudentID, string(data), sub.Score, sub.Total, sub.Status, boolInt(sub.Graded),
+		sub.Comment, string(atts), string(anns), now(), "")
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func (s *Store) GradeSubmission(id int64, score float64, comment string) error {
-	_, err := s.db.Exec(`UPDATE practice_submissions SET score = ?, comment = ?, status = 'graded', graded = 1, graded_at = ? WHERE id = ?`,
-		score, comment, now(), id)
+// SetSubmissionAnnotations 保存老师圈画批注（整体覆盖）
+func (s *Store) SetSubmissionAnnotations(id int64, annotations map[string][]AnnotationShape) error {
+	data := []byte("{}")
+	if len(annotations) > 0 {
+		if b, err := json.Marshal(annotations); err == nil {
+			data = b
+		}
+	}
+	_, err := s.db.Exec(`UPDATE practice_submissions SET annotations = ? WHERE id = ?`, string(data), id)
+	return err
+}
+
+func (s *Store) GradeSubmission(id int64, score float64, comment, feedbackAudio string, feedbackDuration float64) error {
+	_, err := s.db.Exec(`UPDATE practice_submissions SET score = ?, comment = ?, feedback_audio = ?,
+		feedback_audio_duration = ?, status = 'graded', graded = 1, graded_at = ? WHERE id = ?`,
+		score, comment, feedbackAudio, feedbackDuration, now(), id)
 	return err
 }
 
 func (s *Store) ListSubmissions(practiceID int64) ([]PracticeSubmission, error) {
 	rows, err := s.db.Query(`SELECT s.id, s.practice_id, s.student_id, s.answers, s.score, s.total, s.status, s.graded,
-		s.comment, s.submitted_at, s.graded_at, COALESCE(u.display_name, '')
+		s.comment, s.attachments, s.annotations, s.feedback_audio, s.feedback_audio_duration,
+		s.submitted_at, s.graded_at, COALESCE(u.display_name, '')
 		FROM practice_submissions s LEFT JOIN users u ON u.id = s.student_id
 		WHERE s.practice_id = ? ORDER BY s.graded ASC, s.id DESC`, practiceID)
 	if err != nil {
@@ -501,18 +566,29 @@ func (s *Store) ListSubmissions(practiceID int64) ([]PracticeSubmission, error) 
 	out := make([]PracticeSubmission, 0)
 	for rows.Next() {
 		var sub PracticeSubmission
-		var answers string
+		var answers, attachments, annotations, feedbackAudio string
 		var graded int
 		if err := rows.Scan(&sub.ID, &sub.PracticeID, &sub.StudentID, &answers, &sub.Score, &sub.Total,
-			&sub.Status, &graded, &sub.Comment, &sub.SubmittedAt, &sub.GradedAt, &sub.StudentName); err != nil {
+			&sub.Status, &graded, &sub.Comment, &attachments, &annotations,
+			&feedbackAudio, &sub.FeedbackAudioDuration, &sub.SubmittedAt, &sub.GradedAt, &sub.StudentName); err != nil {
 			return nil, err
 		}
 		sub.Graded = graded == 1
+		sub.FeedbackAudio = feedbackAudio
 		if answers != "" {
 			_ = json.Unmarshal([]byte(answers), &sub.Answers)
 		}
 		if sub.Answers == nil {
 			sub.Answers = []QuestionAnswer{}
+		}
+		if attachments != "" {
+			_ = json.Unmarshal([]byte(attachments), &sub.Attachments)
+		}
+		if sub.Attachments == nil {
+			sub.Attachments = []PracticeAttachment{}
+		}
+		if annotations != "" && annotations != "{}" {
+			_ = json.Unmarshal([]byte(annotations), &sub.Annotations)
 		}
 		out = append(out, sub)
 	}

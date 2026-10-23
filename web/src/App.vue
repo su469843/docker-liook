@@ -77,7 +77,7 @@ async function logout() {
         <nav class="nav-links">
           <RouterLink to="/" class="nav-link" :class="{ active: route.path === '/' || route.path.startsWith('/course/') }">课程市场</RouterLink>
           <RouterLink v-if="store.user?.role === 'student'" to="/my" class="nav-link">我的课程</RouterLink>
-          <RouterLink to="/practice" class="nav-link">练习中心</RouterLink>
+          <RouterLink to="/practice" class="nav-link">{{ isStaff ? '作业批改' : '练习中心' }}</RouterLink>
           <RouterLink v-if="isStaff" to="/studio" class="nav-link">老师工作台</RouterLink>
           <RouterLink v-if="isAdmin" to="/admin" class="nav-link">管理后台</RouterLink>
           <RouterLink to="/messages" class="nav-link">消息</RouterLink>

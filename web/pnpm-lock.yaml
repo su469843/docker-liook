@@ -17,6 +17,9 @@ importers:
       hls.js:
         specifier: ^1.5.13
         version: 1.7.3
+      katex:
+        specifier: 0.16.22
+        version: 0.16.22
       vue:
         specifier: ^3.4.27
         version: 3.5.44
@@ -313,6 +316,11 @@ packages:
     os: [linux]
     libc: [musl]
 
+  '@rollup/rollup-openbsd-x64@4.64.9':
+    resolution: {integrity: sha512-4dnxKQ8GHARyjqAU87q5UWhywZTpIbR2VWhtACdC37GD1SGszmvb3TaBFVA4n+fnDHSKMut4ZJ63hVFwgnxVtg==}
+    cpu: [x64]
+    os: [openbsd]
+
   '@rollup/rollup-openharmony-arm64@4.64.9':
     resolution: {integrity: sha512-1qdQj6IrNoR0xFvrCQHmhBXe9HMbBGNTFi+3n4jKMt2rTx4k0aeAdraZU4WDOMfL9tAwS8/TRSuquvNuPQ+Gpw==}
     cpu: [arm64]
@@ -378,6 +386,10 @@ packages:
   '@vue/shared@3.5.44':
     resolution: {integrity: sha512-H82XLH0DjmSOdbEwO15x3QTo1f5PWEtv237eLpYKc0mqLu+B8hnq16lFWmuBmNurkeiG3wr+oM1FhOll/YVFRg==}
 
+  commander@8.3.0:
+    resolution: {integrity: sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==}
+    engines: {node: '>= 12'}
+
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
@@ -403,6 +415,10 @@ packages:
 
   is-url@1.2.4:
     resolution: {integrity: sha512-ITvGim8FhRiYe4IQ5uHSkj7pVaPDrCTkNd3yq3cV7iZAcJdHTUMPMEHcqSOy9xZ9qFenQCvi+2wjH9a1nXqHww==}
+
+  katex@0.16.22:
+    resolution: {integrity: sha512-XCHRdUw4lf3SKBaJe4EvgqIuWwkPSo9XoeO8GjQW94Bp7TWv9hNhzZjZ+OH9yf1UmLygb7DIT5GSFQiyt16zYg==}
+    hasBin: true
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -654,6 +670,9 @@ snapshots:
   '@rollup/rollup-linux-x64-musl@4.64.9':
     optional: true
 
+  '@rollup/rollup-openbsd-x64@4.64.9':
+    optional: true
+
   '@rollup/rollup-openharmony-arm64@4.64.9':
     optional: true
 
@@ -732,6 +751,8 @@ snapshots:
 
   '@vue/shared@3.5.44': {}
 
+  commander@8.3.0: {}
+
   csstype@3.2.3: {}
 
   entities@7.0.1: {}
@@ -770,6 +791,10 @@ snapshots:
   hls.js@1.7.3: {}
 
   is-url@1.2.4: {}
+
+  katex@0.16.22:
+    dependencies:
+      commander: 8.3.0
 
   magic-string@0.30.21:
     dependencies:
@@ -817,6 +842,7 @@ snapshots:
       '@rollup/rollup-linux-s390x-gnu': 4.64.9
       '@rollup/rollup-linux-x64-gnu': 4.64.9
       '@rollup/rollup-linux-x64-musl': 4.64.9
+      '@rollup/rollup-openbsd-x64': 4.64.9
       '@rollup/rollup-openharmony-arm64': 4.64.9
       '@rollup/rollup-win32-arm64-msvc': 4.64.9
       '@rollup/rollup-win32-ia32-msvc': 4.64.9

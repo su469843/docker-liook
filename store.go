@@ -263,6 +263,10 @@ CREATE TABLE IF NOT EXISTS group_reads(
 	if err := s.ensurePracticeSchema(); err != nil {
 		return nil, err
 	}
+	// 严格模式 / 监考事件表（与 practices 主表解耦）
+	if err := s.ensurePracticeProctorSchema(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 

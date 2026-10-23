@@ -214,7 +214,7 @@ async function togglePublish() {
                 <div class="muted small">任课老师</div>
               </div>
               <span class="spacer" style="flex:1"></span>
-              <RouterLink v-if="!canManage && enrolled" to="/messages" class="btn-link">私聊</RouterLink>
+              <RouterLink v-if="!canManage && enrolled" :to="course.teacher_id ? '/messages?peer=' + course.teacher_id : '/messages'" class="btn-link">私聊</RouterLink>
             </div>
             <div class="row" style="justify-content:space-between;margin-top:14px">
               <span class="muted small">课时</span><b>{{ course.lesson_count }}</b>

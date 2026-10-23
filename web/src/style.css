@@ -363,6 +363,7 @@ input::placeholder, textarea::placeholder { color: #b3bdc7; }
 .im-layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - var(--header-h)); background: #fff; }
 .im-list { border-right: 1px solid var(--line); display: flex; flex-direction: column; }
 .im-list-tabs { display: flex; padding: 8px; gap: 6px; border-bottom: 1px solid var(--line); }
+.im-search { padding: 10px 10px 0; }
 .im-list-tabs button { flex: 1; border: none; background: none; padding: 8px; border-radius: 8px; color: var(--text-2); font-size: 14px; cursor: pointer; }
 .im-list-tabs button.active { background: var(--brand-50); color: var(--brand-700); font-weight: 600; }
 .im-scroll { flex: 1; overflow-y: auto; }
@@ -703,3 +704,115 @@ table.table tr:hover td { background: #fcfdfd; }
   .grade-comment { max-width: 100%; }
   .q-editor .row { flex-wrap: wrap; }
 }
+
+/* ---------------- 作业附件 / 拍照 / 语音 / 圈画批注 ---------------- */
+
+.practice-stats { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+.practice-stats .stat-item { min-width: 90px; }
+.practice-stats .stat-num { font-size: 28px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+.practice-stats .stat-num.warn { color: var(--warn); }
+.practice-stats .stat-tip { flex: 1; min-width: 220px; }
+
+.practice-row { border-top: 1px solid var(--line-2); padding: 12px 2px; cursor: pointer; }
+.practice-row:hover { background: var(--line-2); border-radius: 8px; }
+.practice-row-title { font-weight: 600; margin: 6px 0 4px; }
+
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.photo-tile { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--line-2); aspect-ratio: 1; }
+.photo-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-tile.uploading { display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text-3); }
+.photo-del { position: absolute; top: 5px; right: 5px; width: 24px; height: 24px; border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+
+.audio-recorder { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: #e03131; animation: rec-pulse 1s infinite; }
+@keyframes rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+.att-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.att-item { min-width: 0; }
+.att-image { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #f4f6f8; cursor: zoom-in; }
+.att-image > img { width: 100%; display: block; }
+.att-badge { position: absolute; left: 6px; top: 6px; background: rgba(224, 49, 49, .92); color: #fff; font-size: 11px; border-radius: 6px; padding: 2px 6px; }
+.att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-audio { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fcfdfd; }
+.att-audio audio { margin-top: 2px; }
+
+.anno-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.anno-color { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+.anno-color.active { box-shadow: 0 0 0 2px var(--brand); }
+.anno-width-dot { display: inline-block; border-radius: 50%; }
+.anno-stage { display: flex; justify-content: center; background: #eef1f4; border-radius: 12px; padding: 12px; }
+.anno-canvas { position: relative; max-width: 100%; max-height: 62vh; background: #fff; box-shadow: var(--shadow); }
+.anno-canvas > img { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; }
+.anno-input-layer { pointer-events: auto; cursor: crosshair; touch-action: none; }
+
+.ipa-bar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 6px; }
+.ipa-key { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 2px 8px; font-size: 13px; cursor: pointer; }
+.ipa-key:hover { border-color: var(--brand); color: var(--brand-700); }
+
+.bank-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }.bank-card { display: flex; flex-direction: column; }
+.bank-card .btn { margin-left: auto; }
+.preview-formula { background: #fcfdfd; border: 1px dashed var(--line); border-radius: 8px; padding: 2px 8px; font-size: 13px; }
+.grade-attach { margin-bottom: 12px; }
+.grade-attach .att-list { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+
+@media (max-width: 760px) {
+  .anno-canvas { max-height: 48vh; }
+  .att-list { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .practice-stats { gap: 16px; }
+}
+
+/* ---------------- 严格模式 / 监考 ---------------- */
+.badge-soft.warn { background: #fff4e6; color: #d9480f; }
+.alert.warn { background: #fff4e6; border-color: #ffd8a8; color: #a94a00; }
+
+.exam-rules { border-color: #ffd8a8; background: linear-gradient(180deg, #fffdf8, #fff7e6); }
+.exam-lock { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 12px; background: #fff; color: #d9480f; border: 1px solid #ffd8a8; flex-shrink: 0; }
+.exam-rule-list { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); font-size: 13.5px; line-height: 2; }
+.exam-rule-list b { color: var(--text); }
+
+.proctor-bar { position: sticky; top: 70px; z-index: 30; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 16px; margin-bottom: 14px; background: #fff; border: 1px solid #ffd8a8; border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.06); font-size: 13.5px; }
+.proctor-bar .pb-item { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.proctor-bar .pb-item.danger { color: var(--danger); }
+.proctor-bar .pb-item.warn { color: var(--warn); }
+.exam-warn { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-weight: 600; }
+
+.proctor-summary { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 12px 16px; background: var(--line-2, #f8f9fa); border-radius: 10px; }
+.proctor-summary .ps-item { display: flex; flex-direction: column; gap: 2px; min-width: 70px; }
+.proctor-summary .ps-item b { font-size: 15px; }
+
+.proctor-note { background: #fff9db; border: 1px solid #ffe066; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+.row-warn td { background: #fff5f5; }
+
+.proctor-timeline { margin-top: 4px; }
+.timeline { display: flex; flex-direction: column; gap: 0; max-height: 360px; overflow-y: auto; padding: 4px 2px; }
+.tl-item { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.tl-item:last-child { border-bottom: none; }
+.tl-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; background: var(--line); }
+.tl-dot.start { background: #2b8a3e; }
+.tl-dot.leave { background: var(--danger); }
+.tl-dot.return { background: #1971c2; }
+.tl-dot.submit { background: var(--brand); }
+.tl-dot.snapshot { background: var(--warn); }
+.tl-dot.media { background: #7048e8; }
+.tl-main { min-width: 0; }
+.tl-shot { margin-top: 8px; }
+.tl-shot img { max-width: 260px; max-height: 160px; border-radius: 8px; border: 1px solid var(--line); cursor: zoom-in; display: block; }
+
+.strict-box { border: 1px solid #ffd8a8; background: #fffdf8; margin: 4px 0 14px; }
+.strict-box .panel-title { margin: 0 0 4px; }
+
+.voice-feedback { background: var(--line-2, #f8f9fa); border-radius: 10px; padding: 10px 12px; }
+
+@media (max-width: 760px) {
+  .proctor-bar { top: 60px; gap: 10px; font-size: 12.5px; }
+  .proctor-summary { gap: 12px; }
+  .tl-shot img { max-width: 180px; max-height: 120px; }
+}
+
+/* 私聊快捷短语 */
+.quick-replies { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 0 2px; }
+.quick-chip { border: 1px solid var(--line); background: #fff; color: var(--text-2); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; cursor: pointer; transition: all .15s; }
+.quick-chip:hover { border-color: var(--brand); color: var(--brand-700); background: var(--brand-50, #eefbf6); }

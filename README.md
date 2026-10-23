@@ -27,7 +27,9 @@
 - 🛒 **课程市场**：老师把课程「上架市场」后，学员可以自己在市场里选课加入；没上架的课程只能凭邀请码加入
 - 🎬 **服务端转码 HLS**：源视频直传/分片上传到存储后端，服务器用 ffmpeg 切成 HLS 并 **AES-128 加密**；播放地址是 **带有效期的签名 URL**，过期/外链盗用直接失效（没装 ffmpeg 时自动退化为 MP4 + HTTP Range 渐进播放）
 - 📝 **三种课时类型**：视频课时（HLS 播放）、图文课时（富文本编辑器，支持插图）、文档课时（PDF / Word / PPT / 文本，在线预览或下载）
-- ✍️ **作业 / 练习 / 打卡**：老师按课程出「作业 / 考卷 / 单词 / 句子」练习，题型支持选择、填空、判断、简答；**客观题交卷即自动判分**，含简答题时老师批改后出总分；学员端有**单词/句子每日打卡**（连续天数、本月与累计统计），老师可查看课程学员打卡情况。本版本**不内置题库**，题目全部由老师自己录入
+- ✍️ **作业 / 练习 / 打卡**：老师按课程出「作业 / 考卷 / 单词 / 句子」练习，题型支持选择、填空、判断、简答；**客观题交卷即自动判分**，含简答题时老师批改后出总分。题目可从**内置题库一键导入**（仁爱版/小学/四级英语词表、初中数学、语文古诗文默写），数学/语文题干与选项支持 **LaTeX 公式**（KaTeX 渲染）；学员端有**单词/句子每日打卡**（连续天数、本月与累计统计），老师可查看课程学员打卡情况
+- 📸 **拍照 / 语音作业 + 圈画批注**：学员交作业可以**拍照上传**（超过 3MB 的图片前端自动压缩到 3MB 内再传）或**录语音**提交；老师批改时在作业图片上**圈画批注**（画笔/圈/方框/箭头/文字，按原图像素坐标存储，换端不变形），评语可**一键插入国际音标**（内置常用音标键盘），还能给学员录**≤3 分钟的语音点评**
+- 🛡️ **严格监考（可选）**：考卷可开严格模式——限时答题、**强制全屏**、限制**离开页面次数**，超次自动交卷并标记违规；答题过程上报离开/回填/复制/粘贴事件，有摄像头/屏幕共享权限时**自动抓拍**；老师端可看每个学员的退出次数、用时、IP、浏览器与屏幕信息、事件时间线和截图
 - 💬 **课程群聊 + 私聊**：加入课程后自动获得「任课老师私聊」与「课程群聊」，群里可以**引用某个课时的某个播放时间点**，点一下直接跳到那一段
 - 🎨 **手绘矢量图标**：全站图标与聊天表情都是内置的手绘 SVG（不依赖 emoji 字体，任何系统上显示一致、不发虚）
 - 🔐 **注册策略可选**：后台三档 —— 开放注册 / 必须填机构邀请码 / 完全关闭（只能由管理员建号）
@@ -44,8 +46,8 @@
 | 角色 | 能做什么 | 入口 |
 |---|---|---|
 | 管理员 admin | 管理用户（建老师/学员账号、改密、禁用）、设置注册模式与站点名、管全部课程（改任课老师、上架/下架、删除） | 「后台管理」 |
-| 老师 teacher | 只在**教学中心**建课、管理课时（视频/图文/文档）、上传封面、上架市场、查看学员、发邀请码；布置并批改作业/练习、查看学员打卡 | 「教学中心」 |
-| 学员 student | 在**课程市场**浏览已上架课程、凭邀请码加入课程、上课（看视频/图文/文档）、**做作业/练习（自动判分）**、**单词句子每日打卡**、和老师私聊、和同班同学群聊 | 「发现课程」/「我的课程」/「练习中心」 |
+| 老师 teacher | 只在**教学中心**建课、管理课时（视频/图文/文档）、上传封面、上架市场、查看学员、发邀请码；布置并批改作业/练习（**圈画批注、音标/语音点评**）、开启**严格监考**并查看监考记录、查看学员打卡 | 「教学中心」 |
+| 学员 student | 在**课程市场**浏览已上架课程、凭邀请码加入课程、上课（看视频/图文/文档）、**做作业/练习（自动判分，可拍照/语音提交，严格模式全屏作答）**、**单词句子每日打卡**、和老师私聊、和同班同学群聊 | 「发现课程」/「我的课程」/「练习中心」 |
 
 - 首次启动自动创建管理员 **admin**，密码取环境变量 `ADMIN_PASSWORD`；登录后到「后台管理 → 用户管理」创建老师账号。
 - 老师把课程**上架市场**，学员即可自助加入；不上架时，老师把课程**邀请码**发给学员，学员在「我的课程」输入邀请码加入。
@@ -66,7 +68,7 @@
 | 大文件上传 | 断点续传、分片 | 默认直传（带进度）+ 可选 16MB 分片上传，单片可重传、服务端合并 | ✅ |
 | 内容保护 | 防盗链、播放域名白名单、跑马灯水印、DRM | HLS **AES-128 加密** + **带有效期签名 URL**（分片/密钥都签名）+ 登录态与课程权限校验；**无水印、无 DRM、无并发设备数限制** | 🟡 |
 | 存储 | 点播云 / 对象存储 | 本地目录 / S3(MinIO) / WebDAV，后台一键切换并测试连接 | ✅ |
-| 学习路径 | 目录、学习进度、学习记录、考试、作业、证书 | 课时目录 + 播放 + 「引用视频时间点」发群聊；**作业/练习（选择题/填空/判断/简答，客观题自动判分 + 简答题老师批改）、单词/句子打卡**；**无学习进度/完成度记录，无正式考试/证书** | 🟡 |
+| 学习路径 | 目录、学习进度、学习记录、考试、作业、证书 | 课时目录 + 播放 + 「引用视频时间点」发群聊；**作业/练习（四题型客观题自动判分 + 简答批改 + 拍照/语音附件 + 老师圈画批注）、单词/句子打卡、严格监考考卷（全屏/离开次数/摄像头屏幕抓拍）**；**无学习进度/完成度记录，无证书** | 🟡 |
 | 互动 | 社群、圈子、问答、评论、弹幕 | 课程群聊 + 老师私聊 + **1 对 1 语音/视频通话**；**无评论/问答板块、无弹幕** | 🟡 |
 | 通知 | 短信、服务号、App Push、邮件 | 站内未读红点（多标签页同步）；**无短信/邮件/微信推送** | 🟡 |
 | 用户与组织 | 会员体系、多门店、员工细分权限 | 三角色（管理员/老师/学员）+ 三档注册策略（开放 / 机构邀请码 / 关闭）；**无多租户、无机构层级、无细粒度权限** | 🟡 |
@@ -76,6 +78,8 @@
 | 客户端 | 小程序、H5、App、播放器 SDK | 响应式 Web（手机浏览器可用）；**无小程序/App/原生 SDK** | 🟡 |
 | 直播 | 大班直播、连麦、回放 | 只有 1 对 1 点对点通话（WebRTC）；**无直播推流、大班连麦、直播回放** | 🟡 |
 | 部署形态 | SaaS 多租户云服务 | **自托管单实例**：一个 Docker 容器 + 一个数据目录 | ✅ |
+
+> 🤝 **商业部署 / 定制开发**：需要商业授权部署，或定制支付、多租户、小程序、SSO 等能力？欢迎联系：[GitHub Issues · su469843](https://github.com/su469843/docker-liook/issues)
 
 ## 🏠 自托管：我们刻意选择这条路
 
@@ -124,7 +128,7 @@
 
 **教学与互动**
 - [ ] 课程合集/专栏、课时试看、章节权限
-- [ ] 评论 / 问答 / 正式考试（计时防作弊）/ 证书
+- [ ] 评论 / 问答 / 证书（**严格监考考卷已上线**：限时、全屏、离开次数与摄像头/屏幕抓拍；差正式考试编排与证书）
 - [ ] 课程水印（跑马灯）、截屏防护、并发播放设备数限制
 
 **管理与运营**
@@ -348,7 +352,7 @@ go run .
 - **没有 ffmpeg 时**：自动退化为「源文件 + HTTP Range」渐进播放，功能不受影响（只有加密/切片没有）。
 - **大文件**：默认直传适合 ≤1GB；更大的文件在弹窗里选「分片上传」，单片失败可重传，服务端按片落盘再合并。
 - **磁盘/带宽**：源文件与切片都会进存储后端；接 S3 / WebDAV 后本机只留数据库，省空间。
-- 文档课时最大 200MB，聊天图片 ≤10MB。
+- 文档课时最大 200MB，聊天图片 ≤10MB；作业拍照图片服务端上限 10MB（前端超 3MB 自动压缩后再传），录音 ≤25MB，监考抓拍 ≤4MB。
 
 ## 📡 API 一览（供二次开发）
 
@@ -399,14 +403,24 @@ POST   /api/upload/image             multipart 上传图片（≤10MB）
 POST   /api/chat/upload              聊天图片上传（同上，语义化别名）
 
 # 作业 / 练习 / 打卡
+GET    /api/question-bank             内置题库集合（?subject=english|math|chinese 过滤，老师/管理员出题时导入）
 GET    /api/practices?course_id=       练习列表（学员=已加入课程的已发布练习，含我的提交状态；老师=自己课程；管理员=全部）
-POST   /api/courses/:id/practices      {title,kind:homework|quiz|word|sentence,subject,deadline?,duration?,published?,questions:[{type,stem,options?,answer,score,analysis?}]} 老师布置作业/练习
-GET    /api/practices/:id              练习详情 {practice,questions,submission}（交卷前不返回标准答案）
-PUT    /api/practices/:id              修改练习/题目（已有学员提交后不能再改题）
-DELETE /api/practices/:id              删除练习及其提交记录
-POST   /api/practices/:id/submit       {answers:[{question_id,answer}]} 学员交卷：选择题/填空/判断自动判分，简答题待批改
-GET    /api/practices/:id/submissions  提交列表（老师/管理员）
-POST   /api/practices/:id/submissions/:sid/grade  {score,comment?} 老师批改出总分
+POST   /api/courses/:id/practices      {title,kind:homework|quiz|word|sentence,subject,deadline?,duration?,published?,allow_photo?,allow_voice?,proctor?:{mode,max_exits,require_fullscreen,require_camera,require_screen},questions:[{type,stem,options?,answer,score,analysis?}]} 老师布置作业/练习
+GET    /api/practices/:id              练习详情 {practice,questions,submission}（交卷前不返回标准答案；严格模式附监考状态与剩余时间）
+PUT    /api/practices/:id              修改练习/题目/监考配置（已有学员提交后不能再改题）
+DELETE /api/practices/:id              删除练习及其提交记录、附件与监考数据
+POST   /api/practices/:id/files        multipart 上传作业附件（拍照图片 ≤10MB，前端超 3MB 自动压缩；录音 ≤25MB）
+GET    /api/practice-files/:key        作业附件 / 圈画批注底图（按 key 校验归属后下发）
+POST   /api/practices/:id/submit       {answers:[{question_id,answer}],attachments?:[{key,kind,name,size,duration}]} 学员交卷：客观题自动判分，简答题待批改；严格模式下校验超时/超次并写监考判定
+GET    /api/practices/:id/submissions  提交列表（老师/管理员，含监考汇总）
+POST   /api/practices/:id/submissions/:sid/grade  {score,comment?,annotations?:{附件key:[圈画图形]},feedback_audio?,feedback_audio_duration?} 老师批改出总分（可附圈画批注与语音点评）
+POST   /api/practices/:id/submissions/:sid/feedback-audio  上传语音点评（≤3 分钟）
+GET    /api/practices/:id/submissions/:sid/feedback-audio  播放语音点评
+POST   /api/practices/:id/proctor/start  严格模式开始答题（记录设备信息，返回限时/允许离开次数）
+POST   /api/practices/:id/proctor/event  上报监考事件（leave/return/copy/paste/snapshot/media/heartbeat，可附抓拍与环境信息）
+GET    /api/practices/:id/proctor/overview 监考总览（老师：每学员退出次数/用时/IP/浏览器/屏幕/状态）
+GET    /api/practices/:id/proctor/events   某学员监考事件时间线（老师/管理员）
+GET    /api/proctor/snapshot/:eid          监考抓拍图片
 GET    /api/checkins?month=YYYY-MM     我的打卡汇总（连续天数/本月/累计 + 当月明细）
 POST   /api/checkins                   {course_id?,subject,kind:word|sentence|reading,count,minutes,content?} 打卡（同天同类覆盖）
 GET    /api/courses/:id/checkins?month=  课程学员打卡统计（老师/管理员）
@@ -449,16 +463,23 @@ user.go        登录/注册（三种注册模式）/用户管理 + 登录限流
 store.go       SQLite 模型与查询（用户/课程/课时/选课/市场/消息/群聊）
 practice_store.go     作业/练习/打卡：表结构、模型、自动判分与查询
 practice_handlers.go  作业/练习/打卡 REST 接口（出题、交卷、批改、打卡统计）
+practice_media.go     作业附件（拍照/录音）与老师圈画批注的存储、鉴权与下发
+practice_proctor.go           严格监考：配置、事件、抓拍与监考汇总模型
+practice_proctor_handlers.go  监考 REST 接口（开始/上报/总览/时间线/截图）
+questionbank.go       内置题库（英语词表四选一自动出题、数学 LaTeX、古诗文默写）
 storage.go     存储抽象：local / S3 / WebDAV
 handlers.go    课程、市场、课时、HLS/文档代理等 REST 路由
 chat.go        WebSocket Hub：私聊 + 课程群聊（引用时间点）+ 通话信令
 sanitize.go    图文课时 HTML 白名单清洗（防 XSS）
 ws_test.go     端到端测试
 practice_test.go      作业/练习/打卡：判分单测 + 端到端接口测试
+practice_media_test.go        附件与批注：key 校验、上传下发权限、批注形状校验
+practice_proctor_test.go      严格监考：开始/上报/超次判定/总览端到端测试
 version_test.go       /healthz 版本信息测试
 web/           Vue 3 前端（Vite）：市场 / 我的课程 / 学习页 / 教学中心 / 练习中心 / 后台管理
   src/style.css    小鹅通风格设计系统
-  src/components/  VideoPlayer(课件播放) / RichEditor(图文) / GroupChat(课程群) / Modal / Toast…
+  src/files.js     作业附件工具：图片压缩（>3MB 自动压小）、上传、录音格式选择
+  src/components/  VideoPlayer(课件播放) / RichEditor(图文) / GroupChat(课程群) / AnnotationEditor+AnnotationLayer(圈画批注) / AttachmentList(作业附件) / AudioRecorder+VoiceFeedback(录音与语音点评) / FormulaText(LaTeX 渲染) / ProctorDashboard(监考总览) / Modal / Toast…
   src/views/       Login / Market / MyCourses / CourseDetail / Learn / Messages / PracticeCenter / PracticeDetail / Studio / StudioCourse / StudioPractice / Admin
 
 Dockerfile             多阶段构建（前端 → 静态二进制 → alpine，约 50MB）

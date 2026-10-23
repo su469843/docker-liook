@@ -26,3 +26,6 @@ data/
 .DS_Store
 Thumbs.db
 .gotmp/
+
+# 商业化 / 多区域部署（本地分支专有，不提交到主仓库）
+commercial/

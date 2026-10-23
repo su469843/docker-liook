@@ -12,6 +12,7 @@
     "@ffmpeg/core": "0.11.0",
     "@ffmpeg/ffmpeg": "0.11.6",
     "hls.js": "^1.5.13",
+    "katex": "0.16.22",
     "vue": "^3.4.27",
     "vue-router": "^4.3.2"
   },

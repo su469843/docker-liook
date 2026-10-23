@@ -78,6 +78,9 @@ type practiceReq struct {
 	Deadline    string         `json:"deadline"`
 	Duration    int            `json:"duration"`
 	Published   *bool          `json:"published"`
+	AllowPhoto  *bool          `json:"allow_photo"`
+	AllowVoice  *bool          `json:"allow_voice"`
+	Proctor     *proctorReq    `json:"proctor"`   // 严格模式配置（nil = 保持原值）
 	Questions   *[]questionReq `json:"questions"` // nil = 更新时不动题目
 }
 
@@ -134,6 +137,16 @@ func applyPracticeReq(p *Practice, req *practiceReq) string {
 		duration = 1440
 	}
 	p.Duration = duration
+	if req.AllowPhoto != nil {
+		p.AllowPhoto = *req.AllowPhoto
+	} else if p.ID == 0 {
+		p.AllowPhoto = true // 新作业默认允许拍照提交
+	}
+	if req.AllowVoice != nil {
+		p.AllowVoice = *req.AllowVoice
+	} else if p.ID == 0 {
+		p.AllowVoice = true // 新作业默认允许语音提交
+	}
 	return ""
 }
 
@@ -224,6 +237,7 @@ func (a *API) handleListPractices(w http.ResponseWriter, r *http.Request, u *Use
 		}
 		for i := range list {
 			list[i].CanManage = manage
+			list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
 		}
 	} else {
 		switch u.Role {
@@ -231,14 +245,19 @@ func (a *API) handleListPractices(w http.ResponseWriter, r *http.Request, u *Use
 			list, err = a.db.ListPracticesAll()
 			for i := range list {
 				list[i].CanManage = true
+				list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
 			}
 		case "teacher":
 			list, err = a.db.ListPracticesByTeacher(u.ID)
 			for i := range list {
 				list[i].CanManage = true
+				list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
 			}
 		default:
 			list, err = a.db.ListPracticesForStudent(u.ID)
+			for i := range list {
+				list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
+			}
 		}
 	}
 	if err != nil {
@@ -262,6 +281,7 @@ func (a *API) handleGetPractice(w http.ResponseWriter, r *http.Request, u *User)
 		writeErr(w, 404, "练习不存在")
 		return
 	}
+	p.Proctor = a.db.GetProctorConfig(id)
 	course, err := a.db.GetCourse(p.CourseID)
 	if err != nil {
 		writeErr(w, 404, "练习所属课程不存在")
@@ -288,6 +308,11 @@ func (a *API) handleGetPractice(w http.ResponseWriter, r *http.Request, u *User)
 			sub = got
 		}
 	}
+	if sub != nil && !sub.Graded {
+		sub.Annotations = nil  // 未出分前不向学员展示老师批注
+		sub.FeedbackAudio = "" // 语音评语同样等出分后可见
+		sub.FeedbackAudioDuration = 0
+	}
 	// 标准答案/解析：老师始终可见；学员提交且已出分后可见
 	reveal := manage || (sub != nil && sub.Graded)
 	if !reveal {
@@ -296,10 +321,19 @@ func (a *API) handleGetPractice(w http.ResponseWriter, r *http.Request, u *User)
 			questions[i].Analysis = ""
 		}
 	}
+	// 严格模式：学员的答卷状态（开始时间、已离开次数），用于续答与计时
+	var attempt *ProctorAttempt
+	if !manage && p.Proctor.Mode == "strict" {
+		if sub == nil {
+			att := a.db.ProctorAttemptInfo(id, u.ID)
+			attempt = &att
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"practice":   p,
 		"questions":  questions,
 		"submission": sub,
+		"attempt":    attempt,
 	})
 }
 
@@ -336,13 +370,26 @@ func (a *API) handleCreatePractice(w http.ResponseWriter, r *http.Request, u *Us
 	if req.Published != nil {
 		p.Published = *req.Published
 	}
-	if p.Published && len(qs) == 0 {
-		writeErr(w, 400, "还没有题目，请先添加题目再发布")
+	if p.Published && len(qs) == 0 && !p.AllowPhoto && !p.AllowVoice {
+		writeErr(w, 400, "还没有题目：请先添加题目，或允许学员拍照/语音提交")
 		return
+	}
+	// 严格模式配置（默认普通模式）
+	proctorCfg := defaultProctorConfig()
+	if req.Proctor != nil {
+		var msg string
+		if proctorCfg, msg = req.Proctor.toConfig(proctorCfg); msg != "" {
+			writeErr(w, 400, msg)
+			return
+		}
 	}
 	id, err := a.db.CreatePractice(p, qs)
 	if err != nil {
 		writeErr(w, 500, "创建练习失败: "+err.Error())
+		return
+	}
+	if err := a.db.SaveProctorConfig(id, proctorCfg); err != nil {
+		writeErr(w, 500, "保存监考配置失败: "+err.Error())
 		return
 	}
 	saved, err := a.db.GetPractice(id)
@@ -351,6 +398,7 @@ func (a *API) handleCreatePractice(w http.ResponseWriter, r *http.Request, u *Us
 		return
 	}
 	saved.CanManage = true
+	saved.Proctor = proctorCfg
 	writeJSON(w, http.StatusCreated, saved)
 }
 
@@ -401,13 +449,26 @@ func (a *API) handleUpdatePractice(w http.ResponseWriter, r *http.Request, u *Us
 	if withQuestions {
 		totalQuestions = int64(len(qs))
 	}
-	if published && totalQuestions == 0 {
-		writeErr(w, 400, "还没有题目，请先添加题目再发布")
+	if published && totalQuestions == 0 && !p.AllowPhoto && !p.AllowVoice {
+		writeErr(w, 400, "还没有题目：请先添加题目，或允许学员拍照/语音提交")
 		return
 	}
 	p.Published = published
+	// 严格模式配置：与旧值合并后保存
+	proctorCfg := a.db.GetProctorConfig(id)
+	if req.Proctor != nil {
+		var msg string
+		if proctorCfg, msg = req.Proctor.toConfig(proctorCfg); msg != "" {
+			writeErr(w, 400, msg)
+			return
+		}
+	}
 	if err := a.db.UpdatePractice(p, qs, withQuestions); err != nil {
 		writeErr(w, 500, "保存练习失败: "+err.Error())
+		return
+	}
+	if err := a.db.SaveProctorConfig(id, proctorCfg); err != nil {
+		writeErr(w, 500, "保存监考配置失败: "+err.Error())
 		return
 	}
 	saved, err := a.db.GetPractice(id)
@@ -416,6 +477,7 @@ func (a *API) handleUpdatePractice(w http.ResponseWriter, r *http.Request, u *Us
 		return
 	}
 	saved.CanManage = true
+	saved.Proctor = proctorCfg
 	writeJSON(w, http.StatusOK, saved)
 }
 
@@ -438,6 +500,9 @@ func (a *API) handleDeletePractice(w http.ResponseWriter, r *http.Request, u *Us
 		writeErr(w, 500, "删除练习失败: "+err.Error())
 		return
 	}
+	a.db.DeletePracticeProctor(id)
+	a.stg().DeletePrefix(r.Context(), fmt.Sprintf("practice/%d/", id))
+	a.stg().DeletePrefix(r.Context(), fmt.Sprintf("proctor/%d/", id))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -481,22 +546,34 @@ func (a *API) handleSubmitPractice(w http.ResponseWriter, r *http.Request, u *Us
 		writeErr(w, 500, "查询题目失败")
 		return
 	}
-	if len(questions) == 0 {
-		writeErr(w, 400, "这份练习还没有题目")
-		return
-	}
 	var req struct {
-		Answers []QuestionAnswer `json:"answers"`
+		Answers     []QuestionAnswer     `json:"answers"`
+		Attachments []PracticeAttachment `json:"attachments"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "参数错误")
+		return
+	}
+	if len(questions) == 0 && len(req.Attachments) == 0 {
+		writeErr(w, 400, "这份作业还没有题目，请拍照或录音后提交")
+		return
+	}
+	attachments, msg := a.normalizeAttachments(req.Attachments, id, u.ID, p.AllowPhoto, p.AllowVoice)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	// 严格模式：必须已开始答题，并计算是否超时
+	late, proctorExits, guardMsg := a.strictSubmitGuard(p, u.ID)
+	if guardMsg != "" {
+		writeErr(w, 400, guardMsg)
 		return
 	}
 	answers := make(map[int64]string, len(req.Answers))
 	for _, ans := range req.Answers {
 		answers[ans.QuestionID] = trimText(ans.Answer, 4000)
 	}
-	graded := true
+	graded := len(questions) > 0
 	var total, score float64
 	results := make([]QuestionAnswer, 0, len(questions))
 	for i := range questions {
@@ -521,11 +598,22 @@ func (a *API) handleSubmitPractice(w http.ResponseWriter, r *http.Request, u *Us
 	sub := &PracticeSubmission{
 		PracticeID: id, StudentID: u.ID, Answers: results,
 		Score: score, Total: total, Status: status, Graded: graded,
+		Attachments: attachments,
 	}
 	sid, err := a.db.CreateSubmission(sub)
 	if err != nil {
 		writeErr(w, 500, "提交失败: "+err.Error())
 		return
+	}
+	// 严格模式：落一条 submit 事件，老师端能看到交卷时是否超时/被判定违规
+	if cfg := a.db.GetProctorConfig(id); cfg.Mode == "strict" {
+		d := ProctorDetail{Reason: "manual", IP: clientIP(r), UA: trimText(r.UserAgent(), 300), Exits: proctorExits, Late: late}
+		if attempt := a.db.ProctorAttemptInfo(id, u.ID); attempt.StartedAt != "" {
+			if t, ok := parseRFC3339(attempt.StartedAt); ok {
+				d.DurationSec = int(time.Since(t).Seconds())
+			}
+		}
+		_, _ = a.db.AddProctorEvent(id, u.ID, "submit", proctorDetailJSON(d), "")
 	}
 	saved, err := a.db.GetSubmissionByID(sid)
 	if err != nil {
@@ -596,8 +684,11 @@ func (a *API) handleGradePracticeSubmission(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	var req struct {
-		Score   *float64 `json:"score"`
-		Comment string   `json:"comment"`
+		Score                 *float64                     `json:"score"`
+		Comment               string                       `json:"comment"`
+		Annotations           map[string][]AnnotationShape `json:"annotations"`
+		FeedbackAudio         string                       `json:"feedback_audio"`
+		FeedbackAudioDuration float64                      `json:"feedback_audio_duration"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "参数错误")
@@ -614,7 +705,41 @@ func (a *API) handleGradePracticeSubmission(w http.ResponseWriter, r *http.Reque
 		score = total
 	}
 	comment := trimText(req.Comment, 2000)
-	if err := a.db.GradeSubmission(sid, score, comment); err != nil {
+	// 老师语音评语：key 必须是本次提交上传的（practice-feedback/{练习ID}/{提交ID}/...）
+	feedbackAudio := sub.FeedbackAudio
+	feedbackDuration := sub.FeedbackAudioDuration
+	if key := strings.TrimSpace(req.FeedbackAudio); key != "" {
+		if !feedbackAudioKeyRe.MatchString(key) || !strings.Contains(key, fmt.Sprintf("/%d/%d/", id, sid)) {
+			writeErr(w, 400, "语音评语无效")
+			return
+		}
+		if n, err := a.stg().Stat(r.Context(), key); err != nil || n <= 0 {
+			writeErr(w, 400, "语音评语不存在或已失效")
+			return
+		}
+		feedbackAudio = key
+		feedbackDuration = req.FeedbackAudioDuration
+		if feedbackDuration < 0 || feedbackDuration > 600 {
+			feedbackDuration = 0
+		}
+	}
+	// 老师圈画批注：只允许对本次提交的附件做批注
+	if req.Annotations != nil {
+		allowed := make(map[string]bool, len(sub.Attachments))
+		for _, att := range sub.Attachments {
+			allowed[att.Key] = true
+		}
+		anns, msg := normalizeAnnotations(req.Annotations, allowed)
+		if msg != "" {
+			writeErr(w, 400, msg)
+			return
+		}
+		if err := a.db.SetSubmissionAnnotations(sid, anns); err != nil {
+			writeErr(w, 500, "批注保存失败: "+err.Error())
+			return
+		}
+	}
+	if err := a.db.GradeSubmission(sid, score, comment, feedbackAudio, feedbackDuration); err != nil {
 		writeErr(w, 500, "批改失败: "+err.Error())
 		return
 	}

@@ -1,8 +1,10 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { api, postForm } from '../api'
 import { onWS, sendWS, wsState } from '../ws'
 import { fmtDur, fmtRel, fmtTime } from '../format'
+import { compressImage } from '../files'
 import { markChatRead, markGroupRead, refreshUnread, store } from '../store'
 import { toastErr } from '../ui'
 import { STICKERS, plainText, stickerToken } from '../stickers'
@@ -13,6 +15,7 @@ import MessageBody from '../components/MessageBody.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 
 // ---------------- 状态 ----------------
+const route = useRoute()
 const tab = ref('private')
 const contacts = ref([])
 const groups = ref([])
@@ -20,6 +23,7 @@ const activeContact = ref(null)
 const activeGroup = ref(null)
 const messages = ref([])
 const input = ref('')
+const search = ref('')
 const showStickers = ref(false)
 const preview = ref('')
 const listEl = ref(null)
@@ -30,6 +34,16 @@ let off = null
 const hasActive = computed(() => !!(activeContact.value || activeGroup.value))
 const myID = computed(() => store.user?.id)
 const online = computed(() => new Set(store.online))
+const filteredContacts = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return contacts.value
+  return contacts.value.filter((c) => (c.display_name || '').toLowerCase().includes(q))
+})
+const filteredGroups = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return groups.value
+  return groups.value.filter((g) => (g.title || '').toLowerCase().includes(q))
+})
 
 function insertSticker(id) {
   input.value += stickerToken(id)
@@ -46,7 +60,11 @@ async function load() {
   loading.value = true
   await Promise.all([loadContacts(), loadGroups()])
   loading.value = false
-  if (contacts.value.length) openPrivate(contacts.value[0])
+  // 支持从课程成员 / 作业批改页直接带着 ?peer=用户ID 进来私聊
+  const peerID = Number(route.query.peer || 0)
+  const peer = peerID ? contacts.value.find((c) => c.id === peerID) : null
+  if (peer) openPrivate(peer)
+  else if (contacts.value.length) openPrivate(contacts.value[0])
   else if (groups.value.length) openGroup(groups.value[0])
 }
 
@@ -90,10 +108,12 @@ function sendText() {
 }
 
 async function pickImage(ev) {
-  const f = ev.target.files[0]
+  const raw = ev.target.files[0]
   ev.target.value = ''
-  if (!f || !activeContact.value) return
+  if (!raw || !activeContact.value) return
   try {
+    // 超过 3MB 的图片先压缩，聊天发图和作业交图都不容易失败
+    const f = await compressImage(raw)
     const fd = new FormData()
     fd.append('file', f)
     const res = await postForm('/api/upload/image', fd)
@@ -110,6 +130,15 @@ function onKeydown(e) {
     e.preventDefault()
     sendText()
   }
+}
+
+// 快捷短语：老师/学员常用的话一点就填，省得每次手打
+const quickReplies = computed(() => store.user?.role === 'teacher'
+  ? ['今天作业记得提交哦', '上课时间有调整，注意查看', '这部分再想想，加油', '已收到，晚点批改']
+  : ['老师您好，这道题不太懂', '收到，谢谢老师', '作业已提交，请老师查收'])
+
+function useQuick(text) {
+  input.value = input.value.trim() ? input.value.trimEnd() + ' ' + text : text
 }
 
 // ---------------- WebSocket ----------------
@@ -512,6 +541,9 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
   <div>
     <div class="im-layout" :class="{ 'has-active': hasActive }">
       <aside class="im-list">
+        <div class="im-search">
+          <input v-model="search" class="input" placeholder="搜索联系人 / 课程群…" style="height:34px" />
+        </div>
         <div class="im-list-tabs">
           <button :class="{ active: tab === 'private' }" @click="tab = 'private'">私聊</button>
           <button :class="{ active: tab === 'group' }" @click="tab = 'group'">课程群</button>
@@ -519,10 +551,10 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
         <div class="im-scroll">
           <template v-if="tab === 'private'">
             <div v-if="loading" class="muted center" style="padding:24px">加载中…</div>
-            <div v-else-if="!contacts.length" class="group-note" style="margin:14px">
-              加入课程后，这里会出现老师；老师这里会出现自己的学员。
+            <div v-else-if="!filteredContacts.length" class="group-note" style="margin:14px">
+              {{ search ? '没有匹配的联系人' : '加入课程后，这里会出现老师；老师这里会出现自己的学员。' }}
             </div>
-            <div v-for="c in contacts" :key="c.id" class="im-item"
+            <div v-for="c in filteredContacts" :key="c.id" class="im-item"
               :class="{ active: activeContact && activeContact.id === c.id }" @click="openPrivate(c)">
               <span class="avatar" :class="c.role">{{ (c.display_name || '?')[0] }}</span>
               <div class="im-item-main">
@@ -537,10 +569,10 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
           </template>
 
           <template v-else>
-            <div v-if="!groups.length" class="group-note" style="margin:14px">
-              还没有课程群。老师创建课程、学员加入后，这里会出现课程群聊。
+            <div v-if="!filteredGroups.length" class="group-note" style="margin:14px">
+              {{ search ? '没有匹配的课程群' : '还没有课程群。老师创建课程、学员加入后，这里会出现课程群聊。' }}
             </div>
-            <div v-for="g in groups" :key="g.course_id" class="im-item"
+            <div v-for="g in filteredGroups" :key="g.course_id" class="im-item"
               :class="{ active: activeGroup && activeGroup.course_id === g.course_id }" @click="openGroup(g)">
               <span class="avatar teacher">群</span>
               <div class="im-item-main">
@@ -605,6 +637,9 @@ const roleOf = (u) => ({ admin: '管理员', teacher: '老师', student: '学员
               <button class="btn-link" type="button" @click="fileEl.click()"><Icon name="image" :size="16" /> 图片</button>
               <span class="spacer" style="flex:1"></span>
               <span class="muted small">{{ wsState.connected ? '已连接' : '连接中…' }}</span>
+            </div>
+            <div class="quick-replies">
+              <button v-for="q in quickReplies" :key="q" type="button" class="quick-chip" @click="useQuick(q)">{{ q }}</button>
             </div>
             <div class="composer-input">
               <textarea v-model="input" rows="1" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）" @keydown="onKeydown"></textarea>
