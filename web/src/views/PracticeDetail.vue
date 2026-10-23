@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
 import { fmtDate, fmtDur, practiceKindIcon, practiceKindLabel, subjectLabel } from '../format'
 import { compressImage, MAX_AUDIOS, MAX_PHOTOS, practiceFileUrl, uploadPracticeFile } from '../files'
+import { hasEnglish, preload, speak } from '../tts'
 import { toastOk, toastErr, confirmDialog } from '../ui'
 import Icon from '../components/Icon.vue'
 import FormulaText from '../components/FormulaText.vue'
@@ -33,6 +34,14 @@ const reveal = computed(() => canManage.value || !!submission.value?.graded)
 const done = computed(() => !!submission.value)
 const photoAtts = computed(() => attachments.value.filter((a) => a.kind === 'image'))
 const audioAtts = computed(() => attachments.value.filter((a) => a.kind === 'audio'))
+
+// 题目加载后预拉一遍 TTS 音频（没配置 VITE_TTS_URL 时 preload 是空操作，不发生任何请求）
+watch(questions, (qs) => {
+  for (const q of qs || []) {
+    preload(q.stem)
+    for (const opt of q.options || []) preload(opt)
+  }
+})
 
 // ---------------- 严格模式 / 监考 ----------------
 
@@ -576,6 +585,9 @@ async function submit(auto = false) {
           <div class="q-stem">
             {{ qi + 1 }}. <FormulaText :text="q.stem" />
             <span class="muted small">（{{ q.type === 'short' ? '简答' : q.type === 'choice' ? '选择' : q.type === 'judge' ? '判断' : '填空' }} · {{ q.score }} 分）</span>
+            <button v-if="hasEnglish(q.stem)" class="speak-btn" type="button" title="朗读" @click="speak(q.stem)">
+              <Icon name="volume" :size="14" />
+            </button>
           </div>
           <span v-if="done && reveal && !preview && q.type !== 'short'" class="badge-soft" :class="correctOf(q.id) ? 'ok' : 'bad'">
             {{ correctOf(q.id) ? '正确' : '错误' }}
@@ -590,6 +602,9 @@ async function submit(auto = false) {
               :class="{ active: answers[q.id] === letter(i) }" @click="answers[q.id] = letter(i)">
               <span class="opt-letter">{{ letter(i) }}</span>
               <span><FormulaText :text="opt" /></span>
+              <button v-if="hasEnglish(opt)" class="speak-btn" type="button" title="朗读" @click.stop="speak(opt)">
+                <Icon name="volume" :size="14" />
+              </button>
             </div>
           </div>
           <div v-else-if="q.type === 'judge'" class="row" style="gap:10px;margin-top:10px">
@@ -608,6 +623,9 @@ async function submit(auto = false) {
             <div v-for="(opt, i) in q.options" :key="i" class="opt-row" :class="preview ? (q.answer === letter(i) ? 'correct' : '') : optionClass(q, i)">
               <span class="opt-letter">{{ letter(i) }}</span>
               <span><FormulaText :text="opt" /></span>
+              <button v-if="hasEnglish(opt)" class="speak-btn" type="button" title="朗读" @click.stop="speak(opt)">
+                <Icon name="volume" :size="14" />
+              </button>
             </div>
           </div>
           <div v-if="!preview" class="q-answer-row">

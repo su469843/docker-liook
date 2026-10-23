@@ -679,6 +679,13 @@ table.table tr:hover td { background: #fcfdfd; }
   align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; color: var(--text-2);
 }
 .opt-letter.active { background: var(--brand); color: #fff; }
+.speak-btn {
+  margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 8px;
+  background: #fff; color: var(--brand-700); cursor: pointer; transition: all .15s;
+}
+.speak-btn:hover { border-color: var(--brand); background: var(--brand-50); }
+.speak-btn:active { transform: scale(0.92); }
 .q-answer-row { margin-top: 10px; font-size: 14px; }
 .ans-empty { color: var(--text-3); font-weight: 400; }
 .q-analysis { margin-top: 8px; padding: 10px 12px; background: #fafbfc; border-radius: 10px; font-size: 13.5px; color: var(--text-2); }
