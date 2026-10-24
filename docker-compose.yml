@@ -31,8 +31,8 @@ services:
     environment:
       PORT: "8080"
       TZ: Asia/Shanghai
-      # 管理员登录密码（首次启动创建 admin 时使用，务必修改！）
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      # 管理员登录密码（首次启动创建 admin 时使用；留空则随机生成并打印在启动日志里）
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # 会话签名密钥（留空则自动生成并持久化到 /data/.jwt_secret；多实例部署必须显式指定同一个值）
       JWT_SECRET: ${JWT_SECRET:-}
       # 站点名称（首次启动写入数据库，之后以后台设置为准）

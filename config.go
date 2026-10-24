@@ -12,7 +12,7 @@ import (
 
 type Config struct {
 	Port          string
-	AdminPassword string // 首次启动时创建 admin 账号的初始密码
+	AdminPassword string // 首次启动时创建 admin 账号的初始密码；留空则随机生成并打印到日志
 	Secret        string
 	DataDir       string
 	StorageType   string // local | s3 | webdav
@@ -53,7 +53,7 @@ type Config struct {
 func LoadConfig() *Config {
 	c := &Config{
 		Port:          getenv("PORT", "8080"),
-		AdminPassword: getenv("ADMIN_PASSWORD", "admin123"),
+		AdminPassword: strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")),
 		DataDir:       getenv("STORAGE_LOCAL_DIR", "./data"),
 		StorageType:   getenv("STORAGE_TYPE", "local"),
 		S3Endpoint:    getenv("S3_ENDPOINT", ""),

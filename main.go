@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"io/fs"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,6 +43,21 @@ func wrapHandler(h http.Handler, disableCSP bool) http.Handler {
 	return withBodyLimit(withSecureHeaders(h, disableCSP), 1<<20)
 }
 
+// genAdminPassword 随机管理员初始密码：16 位无易混字符。
+// 仅在未设置 ADMIN_PASSWORD 且首次启动建号时使用，打印到日志后即不再保存明文。
+func genAdminPassword() string {
+	b := make([]byte, 16)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(inviteAlphabet))))
+		if err != nil {
+			// 系统熵源失败极少见；与其静默落成弱口令，不如拒绝启动
+			log.Fatalf("生成随机密码失败: %v", err)
+		}
+		b[i] = inviteAlphabet[n.Int64()]
+	}
+	return string(b)
+}
+
 func main() {
 	cfg := LoadConfig()
 	st, err := NewStorage(cfg)
@@ -54,9 +71,16 @@ func main() {
 	// 转码是进程内任务，重启后不会自动续：把「转码中」的课时标为失败，免得一直转圈
 	db.ResetStuckLessons()
 
-	// 首次启动：自动创建管理员账号（用户名 admin，密码取 ADMIN_PASSWORD）
+	// 首次启动：自动创建管理员账号（用户名 admin，密码取 ADMIN_PASSWORD；
+	// 未设置则随机生成并打印到日志，不再使用固定默认口令）
 	if n, _ := db.CountUsers(); n == 0 {
-		hash, _ := bcrypt.GenerateFromPassword([]byte(cfg.AdminPassword), bcrypt.DefaultCost)
+		pw := cfg.AdminPassword
+		if pw == "" {
+			pw = genAdminPassword()
+			log.Printf("未设置 ADMIN_PASSWORD，已随机生成管理员初始密码（下一行仅显示这一次，请登录后台修改）")
+			log.Printf("[初始密码] admin / %s", pw)
+		}
+		hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 		if _, err := db.CreateUser(&User{
 			Username:     "admin",
 			PasswordHash: string(hash),
@@ -66,7 +90,9 @@ func main() {
 		}); err != nil {
 			log.Fatalf("创建管理员失败: %v", err)
 		}
-		log.Printf("已创建管理员账号：admin（密码来自环境变量 ADMIN_PASSWORD，请尽快登录修改）")
+		if cfg.AdminPassword != "" {
+			log.Printf("已创建管理员账号：admin（密码来自环境变量 ADMIN_PASSWORD，请尽快登录修改）")
+		}
 	}
 
 	// 首次启动：写入站点设置（注册模式在后台可改，环境变量只影响首次初始化）
