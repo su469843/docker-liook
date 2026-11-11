@@ -4,6 +4,7 @@ go 1.27.2
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	github.com/minio/minio-go/v7 v7.4.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.60.0

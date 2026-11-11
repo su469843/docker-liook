@@ -126,6 +126,7 @@ func (a *API) writeLessons(w http.ResponseWriter, ls []Lesson) {
 // ---------------- 上传会话（分片 / 断点续传） ----------------
 
 var uploadIDRe = regexp.MustCompile(`^[a-f0-9]{16,32}$`)
+var transcodedNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 type uploadMeta struct {
 	ID        string `json:"id"`
@@ -537,8 +538,13 @@ func (a *API) transcodeToHLS(lessonID int64, srcKey string) error {
 	}
 	defer os.RemoveAll(dir)
 
-	// 1. 取源文件
-	inPath := filepath.Join(dir, "in"+path.Ext(srcKey))
+	// 1. 取源文件。扩展名只保留字母数字（最长 12），保证存储 key 里的任何异常
+	// 字符都不会进入 ffmpeg 的参数（exec.Command 不走 shell，这里防的是文件名混乱）
+	ext := strings.ToLower(path.Ext(srcKey))
+	if len(ext) > 12 || !transcodedNameRe.MatchString(ext) {
+		ext = ".bin"
+	}
+	inPath := filepath.Join(dir, "in"+ext)
 	rc, err := a.stg().Get(context.Background(), srcKey)
 	if err != nil {
 		return fmt.Errorf("读取源文件失败: %w", err)
@@ -599,6 +605,10 @@ func (a *API) transcodeToHLS(lessonID int64, srcKey string) error {
 	for _, e := range entries {
 		name := e.Name()
 		if name != "index.m3u8" && name != "key.bin" && !strings.HasPrefix(name, "seg") {
+			continue
+		}
+		// 产物名再过一遍白名单正则，保证进存储 key / 播放 URL 的字符可控
+		if !transcodedNameRe.MatchString(name) {
 			continue
 		}
 		sf, err := os.Open(filepath.Join(dir, name))

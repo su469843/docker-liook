@@ -18,6 +18,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -285,6 +286,11 @@ func (a *API) handleUploadPracticeFile(w http.ResponseWriter, r *http.Request, u
 		writeErr(w, http.StatusForbidden, "练习尚未发布")
 		return
 	}
+	// 错题重练只有本人能交附件（一般是纯客观题，这里兜底）
+	if p.OwnerID != 0 && p.OwnerID != u.ID {
+		writeErr(w, 404, "练习不存在")
+		return
+	}
 	enrolled, _ := a.db.IsEnrolled(p.CourseID, u.ID)
 	if !enrolled {
 		writeErr(w, http.StatusForbidden, "你还没有加入该课程")
@@ -418,5 +424,137 @@ func (a *API) handleServePracticeFile(w http.ResponseWriter, r *http.Request, u 
 	w.Header().Set("Content-Type", practiceFileContentType(key))
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("Accept-Ranges", "none")
+	io.Copy(w, rc)
+}
+
+// ---------------- 老师语音评语 ----------------
+
+var feedbackAudioExts = map[string]string{
+	"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a",
+	"audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/aac": ".aac",
+}
+
+// feedbackAudioKeyRe 老师语音评语的存储 key 格式
+var feedbackAudioKeyRe = regexp.MustCompile(`^practice-feedback/([0-9]+)/([0-9]+)/([a-f0-9]{32})\.(webm|ogg|m4a|mp3|wav|aac)$`)
+
+// handleUploadFeedbackAudio 老师给某份提交录一段语音评语（≤3MB）
+func (a *API) handleUploadFeedbackAudio(w http.ResponseWriter, r *http.Request, u *User) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, 400, "无效的练习 ID")
+		return
+	}
+	p, err := a.db.GetPractice(id)
+	if err != nil {
+		writeErr(w, 404, "练习不存在")
+		return
+	}
+	if _, ok := a.canManageCourse(u, p.CourseID); !ok {
+		writeErr(w, http.StatusForbidden, "无权批改该练习")
+		return
+	}
+	sid, err := strconv.ParseInt(r.PathValue("sid"), 10, 64)
+	if err != nil || sid <= 0 {
+		writeErr(w, 400, "无效的提交 ID")
+		return
+	}
+	sub, err := a.db.GetSubmissionByID(sid)
+	if err != nil || sub.PracticeID != id {
+		writeErr(w, 404, "提交不存在")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	file, head, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, 400, "请上传语音（≤3MB）")
+		return
+	}
+	defer file.Close()
+	headBuf := make([]byte, 512)
+	n, _ := io.ReadFull(file, headBuf)
+	if n < 8 {
+		writeErr(w, 400, "文件无效")
+		return
+	}
+	// 优先信任 multipart 分片自带的 Content-Type（录音 Blob 会带上 audio/webm 等），
+	// 因为 http.DetectContentType 识别不了 webm/ogg 这类容器格式。
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(head.Header.Get("Content-Type"), ";")[0]))
+	ext, ok := feedbackAudioExts[ct]
+	if !ok {
+		ext, ok = feedbackAudioExts[strings.Split(http.DetectContentType(headBuf[:n]), ";")[0]]
+	}
+	if !ok {
+		writeErr(w, 400, "仅支持 webm/ogg/m4a/mp3/wav 语音")
+		return
+	}
+	if head.Size > 3<<20 {
+		writeErr(w, 400, "语音评语不能超过 3MB")
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeErr(w, 500, "读取失败")
+		return
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeErr(w, 400, "读取失败")
+		return
+	}
+	buf := make([]byte, 16)
+	_, _ = rand.Read(buf)
+	key := fmt.Sprintf("practice-feedback/%d/%d/%s%s", id, sid, hexStr(buf), ext)
+	if err := a.stg().Put(r.Context(), key, data); err != nil {
+		writeErr(w, 500, "保存失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key": key, "size": len(data), "url": fmt.Sprintf("/api/practices/%d/submissions/%d/feedback-audio", id, sid),
+	})
+}
+
+// handleServeFeedbackAudio 播放老师语音评语：学员本人或课程管理者
+func (a *API) handleServeFeedbackAudio(w http.ResponseWriter, r *http.Request, u *User) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, 400, "无效的练习 ID")
+		return
+	}
+	sid, err := strconv.ParseInt(r.PathValue("sid"), 10, 64)
+	if err != nil || sid <= 0 {
+		writeErr(w, 400, "无效的提交 ID")
+		return
+	}
+	p, err := a.db.GetPractice(id)
+	if err != nil {
+		writeErr(w, 404, "练习不存在")
+		return
+	}
+	sub, err := a.db.GetSubmissionByID(sid)
+	if err != nil || sub.PracticeID != id {
+		writeErr(w, 404, "提交不存在")
+		return
+	}
+	allowed := u.ID == sub.StudentID
+	if !allowed {
+		if _, ok := a.canManageCourse(u, p.CourseID); ok {
+			allowed = true
+		}
+	}
+	if !allowed {
+		writeErr(w, http.StatusForbidden, "无权播放该语音评语")
+		return
+	}
+	if sub.FeedbackAudio == "" {
+		writeErr(w, 404, "还没有语音评语")
+		return
+	}
+	rc, err := a.stg().Get(r.Context(), sub.FeedbackAudio)
+	if err != nil {
+		writeErr(w, 404, "语音评语不存在")
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", practiceFileContentType(sub.FeedbackAudio))
+	w.Header().Set("Cache-Control", "private, max-age=3600")
 	io.Copy(w, rc)
 }

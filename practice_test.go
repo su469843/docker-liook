@@ -234,3 +234,123 @@ func getStatus(t *testing.T, c *http.Client, path string) int {
 	resp.Body.Close()
 	return resp.StatusCode
 }
+
+func TestWrongBookAndRedo(t *testing.T) {
+	_, handler := newTestAPI(t)
+	srv := httptest.NewServer(handler)
+	testBase = srv.URL
+	defer srv.Close()
+
+	admin := login(t, "admin", "admin-pass-123")
+	decodeAs(t, postJSON(t, admin, "/api/users", map[string]any{
+		"username": "wb_teacher", "password": "teach-pass", "display_name": "错题老师", "role": "teacher"}), 200, nil)
+	decodeAs(t, postJSON(t, admin, "/api/users", map[string]any{
+		"username": "wb_stu", "password": "stu-pass", "display_name": "错题学员", "role": "student"}), 200, nil)
+	decodeAs(t, postJSON(t, admin, "/api/users", map[string]any{
+		"username": "wb_stu2", "password": "stu-pass", "display_name": "别班学员", "role": "student"}), 200, nil)
+	teacher := login(t, "wb_teacher", "teach-pass")
+	student := login(t, "wb_stu", "stu-pass")
+	other := login(t, "wb_stu2", "stu-pass")
+
+	var course Course
+	decodeAs(t, postJSON(t, teacher, "/api/courses", map[string]any{"title": "错题本课"}), 200, &course)
+	decodeAs(t, postJSON(t, student, "/api/join", map[string]string{"code": course.InviteCode}), 200, nil)
+	decodeAs(t, postJSON(t, other, "/api/join", map[string]string{"code": course.InviteCode}), 200, nil)
+
+	var created Practice
+	decodeAs(t, postJSON(t, teacher, "/api/courses/"+itoa(course.ID)+"/practices", map[string]any{
+		"title": "Unit 2 小测", "kind": "quiz", "subject": "english", "published": true,
+		"questions": []map[string]any{
+			{"type": "choice", "stem": "苹果的英文", "options": []string{"apple", "banana"}, "answer": "A", "score": 5, "analysis": "apple 苹果"},
+			{"type": "fill", "stem": "书的英文", "answer": "book", "score": 5},
+			{"type": "short", "stem": "写一句话", "answer": "Hello!", "score": 8},
+		},
+	}), 201, &created)
+	pid := itoa(created.ID)
+
+	// 未交卷前重练被拒绝
+	r := postJSON(t, student, "/api/practices/"+pid+"/redo-wrong", map[string]any{})
+	if r.StatusCode != 400 {
+		t.Fatalf("未交卷就重练应 400，实际 %d", r.StatusCode)
+	}
+	r.Body.Close()
+
+	// 学员提交：第 1 题答错、第 2 题答对、第 3 题简答
+	var detail struct {
+		Questions []PracticeQuestion `json:"questions"`
+	}
+	getJSON(t, student, "/api/practices/"+pid, &detail)
+	decodeAs(t, postJSON(t, student, "/api/practices/"+pid+"/submit", map[string]any{
+		"answers": []map[string]any{
+			{"question_id": detail.Questions[0].ID, "answer": "B"},
+			{"question_id": detail.Questions[1].ID, "answer": "book"},
+			{"question_id": detail.Questions[2].ID, "answer": "Hi"},
+		},
+	}), 201, &PracticeSubmission{})
+
+	// 错题本：只有判错的选择题（简答题不算对错，不收）
+	var groups []WrongBookGroup
+	getJSON(t, student, "/api/wrongbook", &groups)
+	if len(groups) != 1 || groups[0].PracticeID != created.ID || len(groups[0].Questions) != 1 {
+		t.Fatalf("错题本分组异常: %+v", groups)
+	}
+	item := groups[0].Questions[0]
+	if item.Stem != "苹果的英文" || item.Answer != "A" || item.MyAnswer != "B" || item.Analysis != "apple 苹果" {
+		t.Fatalf("错题条目异常: %+v", item)
+	}
+	// 其他学员错题本是空的
+	getJSON(t, other, "/api/wrongbook", &groups)
+	if len(groups) != 0 {
+		t.Fatalf("其他学员错题本应为空: %+v", groups)
+	}
+
+	// 一键重练：生成仅本人可见的普通模式重练（只含错题）
+	var redo Practice
+	decodeAs(t, postJSON(t, student, "/api/practices/"+pid+"/redo-wrong", map[string]any{}), 201, &redo)
+	if redo.Kind != "redo" || redo.OwnerID == 0 || redo.RedoOf != created.ID || redo.QuestionCount != 1 {
+		t.Fatalf("重练练习异常: %+v", redo)
+	}
+	var redoDetail struct {
+		Practice  Practice           `json:"practice"`
+		Questions []PracticeQuestion `json:"questions"`
+	}
+	getJSON(t, student, "/api/practices/"+itoa(redo.ID), &redoDetail)
+	if len(redoDetail.Questions) != 1 || redoDetail.Questions[0].Stem != "苹果的英文" {
+		t.Fatalf("重练题目异常: %+v", redoDetail.Questions)
+	}
+
+	// 未交卷再点一次：复用同一份重练，不新建
+	var redo2 Practice
+	decodeAs(t, postJSON(t, student, "/api/practices/"+pid+"/redo-wrong", map[string]any{}), 200, &redo2)
+	if redo2.ID != redo.ID {
+		t.Fatalf("未交卷的重练应复用: %d != %d", redo2.ID, redo.ID)
+	}
+
+	// 可见性：别的学员提交他人重练 404；重练不进老师和其他学员的列表
+	if code := getStatus(t, other, "/api/practices/"+itoa(redo.ID)); code != 404 {
+		t.Fatalf("其他学员查看他人重练应 404，实际 %d", code)
+	}
+	var otherList []Practice
+	getJSON(t, other, "/api/practices", &otherList)
+	for _, p := range otherList {
+		if p.ID == redo.ID {
+			t.Fatalf("重练不应出现在其他学员的列表里: %+v", otherList)
+		}
+	}
+	var teacherList []Practice
+	getJSON(t, teacher, "/api/practices", &teacherList)
+	for _, p := range teacherList {
+		if p.ID == redo.ID {
+			t.Fatalf("重练不应出现在老师列表里: %+v", teacherList)
+		}
+	}
+
+	// 重练交卷后再点重练：生成新的（上一份已交卷）
+	decodeAs(t, postJSON(t, student, "/api/practices/"+itoa(redo.ID)+"/submit", map[string]any{
+		"answers": []map[string]any{{"question_id": redoDetail.Questions[0].ID, "answer": "A"}},
+	}), 201, &PracticeSubmission{})
+	decodeAs(t, postJSON(t, student, "/api/practices/"+pid+"/redo-wrong", map[string]any{}), 201, &redo2)
+	if redo2.ID == redo.ID {
+		t.Fatal("上一份重练已交卷，应生成新的重练")
+	}
+}

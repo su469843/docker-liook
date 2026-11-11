@@ -6,7 +6,6 @@ import { store } from '../store'
 import { fmtDate, practiceKindIcon, practiceKindLabel, subjectLabel, monthNow, PRACTICE_SUBJECTS, PRACTICE_KINDS, CHECKIN_KINDS } from '../format'
 import { toastOk, toastErr } from '../ui'
 import Icon from '../components/Icon.vue'
-import ProctorDashboard from '../components/ProctorDashboard.vue'
 
 const router = useRouter()
 
@@ -109,8 +108,8 @@ async function load() {
   try {
     const list = await api('/api/practices')
     practices.value = Array.isArray(list) ? list : []
-    // 老师 / 管理员看管理视角，不需要打卡与「待完成」
-    if (!isStaff.value) await loadSummary()
+    // 打卡隐藏期间不再请求 /api/checkins（loadSummary 保留，恢复时取消下一行注释即可）
+    // if (!isStaff.value) await loadSummary()
   } catch (e) {
     err.value = e.message
   } finally {
@@ -140,14 +139,6 @@ function open(p) {
 function openStudio(courseId) {
   router.push(`/studio/${courseId}/practice`)
 }
-
-// 老师：监考台（离开次数 / 截图 / 浏览器与屏幕信息）
-const showProctor = ref(false)
-const proctorPractice = ref(null)
-function openProctor(p) {
-  proctorPractice.value = p
-  showProctor.value = true
-}
 </script>
 
 <template>
@@ -156,8 +147,11 @@ function openProctor(p) {
       <div>
         <h1 class="page-title">练习中心</h1>
         <div class="page-sub" v-if="isStaff">老师视角：查看各课程作业的提交 / 待批改，点「批改」进入圈画批注</div>
-        <div class="page-sub" v-else>作业 / 考卷 / 单词 / 句子练习，客观题交卷即出分，单词句子每天打卡</div>
+        <div class="page-sub" v-else>作业 / 考卷 / 单词 / 句子练习，客观题交卷即出分</div>
       </div>
+      <RouterLink v-if="!isStaff" to="/wrongbook" class="btn small">
+        <Icon name="refresh" :size="15" /> 错题本
+      </RouterLink>
       <RouterLink v-if="!isStaff" to="/my" class="btn small"><Icon name="book" :size="15" /> 我的课程</RouterLink>
       <RouterLink v-else :to="store.user?.role === 'admin' ? '/admin' : '/studio'" class="btn small">
         <Icon name="arrow-left" :size="15" /> 返回后台
@@ -167,7 +161,9 @@ function openProctor(p) {
     <div v-if="loading" class="skeleton" style="height:240px"></div>
 
     <template v-else>
-      <!-- 学员：单词打卡 -->
+      <!-- 打卡功能暂时隐藏：自报数量式的打卡没有真实词库支撑，先下线入口；
+           后端 /api/checkins 仍保留（历史数据不丢），接上词书后可整体恢复 -->
+      <!--
       <div v-if="!isStaff" class="card checkin-card">
         <div class="row" style="justify-content:space-between;align-items:flex-start">
           <div class="row" style="gap:12px;align-items:flex-start">
@@ -222,6 +218,7 @@ function openProctor(p) {
           </button>
         </div>
       </div>
+      -->
 
       <!-- 老师：汇总 -->
       <div v-if="isStaff" class="card practice-stats">
@@ -276,7 +273,6 @@ function openProctor(p) {
               <span v-if="!p.published" class="badge-soft bad">未发布</span>
               <span v-if="p.allow_photo" class="badge-soft"><Icon name="camera" :size="11" /> 拍照</span>
               <span v-if="p.allow_voice" class="badge-soft"><Icon name="mic" :size="11" /> 语音</span>
-              <span v-if="p.proctor?.mode === 'strict'" class="badge-soft warn"><Icon name="lock" :size="11" /> 严格监考</span>
             </div>
             <div class="practice-row-title">{{ p.title }}</div>
             <div class="muted small row" style="gap:14px;flex-wrap:wrap">
@@ -284,9 +280,6 @@ function openProctor(p) {
               <span>已交 {{ p.submitted_count || 0 }}<template v-if="p.student_count"> / {{ p.student_count }} 人</template></span>
               <span v-if="p.pending_count" style="color:var(--warn)">待批改 {{ p.pending_count }}</span>
               <span v-if="p.deadline">截止 {{ fmtDate(p.deadline) }}</span>
-              <button v-if="p.proctor?.mode === 'strict'" class="btn small ghost" @click.stop="openProctor(p)">
-                <Icon name="eye" :size="13" /> 监考台
-              </button>
             </div>
           </div>
         </div>
@@ -317,8 +310,5 @@ function openProctor(p) {
         </div>
       </div>
     </template>
-
-    <ProctorDashboard v-if="showProctor" :practice-id="proctorPractice?.id || 0"
-      :title="proctorPractice?.title || ''" @close="showProctor = false" />
   </div>
 </template>

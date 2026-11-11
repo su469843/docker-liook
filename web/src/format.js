@@ -104,6 +104,17 @@ export const PRACTICE_KINDS = [
   { id: 'sentence', name: '句子练习', icon: 'quote' },
 ]
 
+// 错题重练是错题本自动生成的类型，不进老师的新建类型下拉，只在这里给展示名
+export function practiceKindLabel(kind) {
+  if (kind === 'redo') return '错题重练'
+  return PRACTICE_KINDS.find((k) => k.id === kind)?.name || '练习'
+}
+
+export function practiceKindIcon(kind) {
+  if (kind === 'redo') return 'refresh'
+  return PRACTICE_KINDS.find((k) => k.id === kind)?.icon || 'file-plus'
+}
+
 export const PRACTICE_SUBJECTS = [
   { id: 'english', name: '英语' },
   { id: 'math', name: '数学' },
@@ -123,14 +134,6 @@ export const QUESTION_TYPES = [
   { id: 'judge', name: '判断题' },
   { id: 'short', name: '简答题' },
 ]
-
-export function practiceKindLabel(kind) {
-  return PRACTICE_KINDS.find((k) => k.id === kind)?.name || '练习'
-}
-
-export function practiceKindIcon(kind) {
-  return PRACTICE_KINDS.find((k) => k.id === kind)?.icon || 'file-plus'
-}
 
 export function subjectLabel(subject) {
   return PRACTICE_SUBJECTS.find((s) => s.id === subject)?.name || '综合'

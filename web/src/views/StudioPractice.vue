@@ -13,7 +13,6 @@ import Icon from '../components/Icon.vue'
 import FormulaText from '../components/FormulaText.vue'
 import AttachmentList from '../components/AttachmentList.vue'
 import AnnotationEditor from '../components/AnnotationEditor.vue'
-import ProctorDashboard from '../components/ProctorDashboard.vue'
 import VoiceFeedback from '../components/VoiceFeedback.vue'
 
 const route = useRoute()
@@ -82,7 +81,6 @@ function blankForm() {
     published: true,
     allow_photo: true,
     allow_voice: true,
-    proctor: { mode: 'normal', max_exits: 0, require_fullscreen: true, require_camera: false, require_screen: false },
     questions: [blankQuestion('choice')]
   }
 }
@@ -113,13 +111,6 @@ async function openEdit(p) {
       published: !!pr.published,
       allow_photo: pr.allow_photo !== false,
       allow_voice: pr.allow_voice !== false,
-      proctor: {
-        mode: pr.proctor?.mode === 'strict' ? 'strict' : 'normal',
-        max_exits: Number(pr.proctor?.max_exits || 0),
-        require_fullscreen: pr.proctor?.require_fullscreen !== false,
-        require_camera: !!pr.proctor?.require_camera,
-        require_screen: !!pr.proctor?.require_screen
-      },
       questions: (detail.questions || []).map((q) => ({
         type: q.type,
         stem: q.stem,
@@ -216,13 +207,6 @@ async function save() {
       return
     }
   }
-  const proctor = {
-    mode: form.value.proctor?.mode === 'strict' ? 'strict' : 'normal',
-    max_exits: Number(form.value.proctor?.max_exits) || 0,
-    require_fullscreen: form.value.proctor?.require_fullscreen !== false,
-    require_camera: !!form.value.proctor?.require_camera,
-    require_screen: !!form.value.proctor?.require_screen
-  }
   const payload = {
     title: form.value.title,
     kind: form.value.kind,
@@ -233,7 +217,6 @@ async function save() {
     published: !!form.value.published,
     allow_photo: form.value.allow_photo !== false,
     allow_voice: form.value.allow_voice !== false,
-    proctor,
     questions: form.value.questions.map((q) => ({
       type: q.type,
       stem: q.stem,
@@ -340,9 +323,6 @@ function importBankSet(set) {
 
 // ---------------- 批改 ----------------
 
-const showProctor = ref(false)
-const proctorPractice = ref(null)
-const proctorOverview = ref({})
 const showGrade = ref(false)
 const gradePractice = ref(null)
 const submissions = ref([])
@@ -353,15 +333,6 @@ const gradeForm = ref({ score: 0, comment: '' })
 const gradeSaving = ref(false)
 const gradeVoice = ref({ key: '', duration: 0 })
 
-function openProctor(p) {
-  proctorPractice.value = p
-  showProctor.value = true
-}
-
-function proctorOf(studentID) {
-  return proctorOverview.value[studentID] || null
-}
-
 async function openGrade(p) {
   gradePractice.value = p
   showGrade.value = true
@@ -369,16 +340,13 @@ async function openGrade(p) {
   gradeTarget.value = null
   submissions.value = []
   gradeQuestions.value = []
-  proctorOverview.value = {}
   try {
-    const [subs, detail, overview] = await Promise.all([
+    const [subs, detail] = await Promise.all([
       api(`/api/practices/${p.id}/submissions`),
-      api(`/api/practices/${p.id}`),
-      api(`/api/practices/${p.id}/proctor/overview`).catch(() => null)
+      api(`/api/practices/${p.id}`)
     ])
     submissions.value = Array.isArray(subs) ? subs : []
     gradeQuestions.value = detail.questions || []
-    for (const s of (overview?.students || [])) proctorOverview.value[s.student_id] = s
     if (submissions.value.length) pickSubmission(submissions.value[0])
   } catch (e) {
     toastErr(e)
@@ -489,7 +457,7 @@ function switchTab(name) {
     <div class="page-head">
       <div>
         <h1 class="page-title">作业与练习</h1>
-        <div class="page-sub">{{ course?.title || '加载中…' }} · 出题、发布、批改与打卡统计</div>
+        <div class="page-sub">{{ course?.title || '加载中…' }} · 出题、发布与批改</div>
       </div>
       <button class="btn primary" @click="openCreate"><Icon name="plus" :size="16" /> 新建练习</button>
     </div>
@@ -500,7 +468,9 @@ function switchTab(name) {
     <template v-else>
       <div class="tabs">
         <button class="tab" :class="{ active: tab === 'practices' }" @click="switchTab('practices')">作业练习 {{ practices.length }}</button>
+        <!-- 打卡功能暂时隐藏（与练习中心同步下线，词书接上后一并恢复）
         <button class="tab" :class="{ active: tab === 'checkins' }" @click="switchTab('checkins')">打卡统计</button>
+        -->
       </div>
 
       <template v-if="tab === 'practices'">
@@ -521,7 +491,6 @@ function switchTab(name) {
                 <span v-if="!p.published" class="badge-soft bad">未发布</span>
                 <span v-if="p.allow_photo" class="badge-soft"><Icon name="camera" :size="11" /> 拍照</span>
                 <span v-if="p.allow_voice" class="badge-soft"><Icon name="mic" :size="11" /> 语音</span>
-                <span v-if="p.proctor?.mode === 'strict'" class="badge-soft warn"><Icon name="lock" :size="11" /> 严格监考</span>
               </div>
               <h3 style="margin:8px 0 4px;font-size:16px">{{ p.title }}</h3>
               <div class="muted small row" style="gap:14px;flex-wrap:wrap">
@@ -529,13 +498,9 @@ function switchTab(name) {
                 <span>已交 {{ p.submitted_count || 0 }}<template v-if="p.student_count"> / {{ p.student_count }} 人</template></span>
                 <span v-if="p.pending_count" style="color:var(--warn)">待批改 {{ p.pending_count }}</span>
                 <span v-if="p.deadline">截止 {{ fmtDate(p.deadline) }}</span>
-                <span v-if="p.proctor?.mode === 'strict'" class="muted">
-                  限时 {{ p.duration ? p.duration + ' 分钟' : '不限' }} · 允许离开 {{ p.proctor.max_exits ?? 0 }} 次
-                </span>
               </div>
             </div>
             <div class="row" style="gap:8px;flex-shrink:0;flex-wrap:wrap">
-              <button class="btn small" @click="openProctor(p)"><Icon name="eye" :size="14" /> 监考台</button>
               <button class="btn small" @click="togglePublish(p)">{{ p.published ? '撤下' : '发布' }}</button>
               <button class="btn small" @click="openEdit(p)"><Icon name="edit" :size="14" /> 编辑</button>
               <button class="btn small" @click="openGrade(p)"><Icon name="check" :size="14" /> 批改</button>
@@ -545,6 +510,7 @@ function switchTab(name) {
         </div>
       </template>
 
+      <!-- 打卡统计面板暂时隐藏（入口已下线，代码保留便于恢复）
       <template v-else>
         <div class="card">
           <div class="row" style="justify-content:space-between;margin-bottom:14px">
@@ -573,6 +539,7 @@ function switchTab(name) {
           </div>
         </div>
       </template>
+      -->
     </template>
 
     <!-- 出题弹窗 -->
@@ -599,7 +566,7 @@ function switchTab(name) {
           <input v-model="form.deadline" type="datetime-local" class="input" />
         </div>
         <div class="field">
-          <label>{{ form.proctor?.mode === 'strict' ? '限时（分钟，0 = 不限，超时自动交卷）' : '建议用时（分钟，0 = 不限）' }}</label>
+          <label>建议用时（分钟，0 = 不限）</label>
           <input v-model.number="form.duration" type="number" min="0" max="1440" class="input" />
         </div>
         <div class="field">
@@ -625,54 +592,6 @@ function switchTab(name) {
         </div>
       </div>
 
-      <!-- 严格模式 / 监考设置 -->
-      <div class="card strict-box">
-        <div class="row" style="justify-content:space-between;align-items:flex-start;gap:12px">
-          <div>
-            <b><Icon name="lock" :size="16" /> 严格监考模式</b>
-            <p class="muted small" style="margin:4px 0 0">
-              开启后学员必须全屏答题；切屏 / 退出全屏 / 最小化都会被记录，超过允许次数自动交卷；
-              老师可以在「监考台」看到离开次数、时间、截图、IP、浏览器与屏幕信息。
-            </p>
-          </div>
-          <label class="switch" :class="{ on: form.proctor?.mode === 'strict' }"
-            @click="form.proctor.mode = form.proctor?.mode === 'strict' ? 'normal' : 'strict'">
-            <span class="switch-track"><span class="switch-dot"></span></span>
-            <span class="small">{{ form.proctor?.mode === 'strict' ? '已开启' : '未开启' }}</span>
-          </label>
-        </div>
-        <template v-if="form.proctor?.mode === 'strict'">
-          <div class="form-grid" style="margin-top:12px">
-            <div class="field">
-              <label>允许离开次数（0 = 一次都不允许，超过自动交卷）</label>
-              <input v-model.number="form.proctor.max_exits" type="number" min="0" max="20" class="input" style="max-width:160px" />
-            </div>
-            <div class="field">
-              <label>抓拍与设备要求</label>
-              <div class="row" style="gap:16px;flex-wrap:wrap">
-                <label class="switch" :class="{ on: form.proctor.require_fullscreen }" @click="form.proctor.require_fullscreen = !form.proctor.require_fullscreen">
-                  <span class="switch-track"><span class="switch-dot"></span></span>
-                  <span class="small">必须全屏</span>
-                </label>
-                <label class="switch" :class="{ on: form.proctor.require_camera }" @click="form.proctor.require_camera = !form.proctor.require_camera">
-                  <span class="switch-track"><span class="switch-dot"></span></span>
-                  <span class="small">摄像头抓拍</span>
-                </label>
-                <label class="switch" :class="{ on: form.proctor.require_screen }" @click="form.proctor.require_screen = !form.proctor.require_screen">
-                  <span class="switch-track"><span class="switch-dot"></span></span>
-                  <span class="small">屏幕共享抓拍</span>
-                </label>
-              </div>
-              <div class="muted small" style="margin-top:6px">
-                离开页面时会尝试抓拍一张图并连同浏览器 / 屏幕信息一起上报；学员拒绝授权时会记录「未授权」，老师端仍能看到离开次数。
-              </div>
-            </div>
-          </div>
-          <div class="alert info" style="margin:10px 0 0">
-            严格模式建议同时设置「限时」，并把「允许离开次数」设为 0-2 次；学员点「开始答题」后才开始计时。
-          </div>
-        </template>
-      </div>
       <div class="field">
         <label>说明（选填）</label>
         <textarea v-model="form.description" class="textarea" style="min-height:64px" placeholder="例如：Unit 1 单词表，交卷后自动判分"></textarea>
@@ -777,29 +696,6 @@ function switchTab(name) {
             <span class="muted small">{{ fmtDate(gradeTarget.submitted_at) }} 提交</span>
           </div>
 
-          <!-- 监考信息（严格模式） -->
-          <div v-if="proctorOf(gradeTarget.student_id)" class="proctor-note">
-            <div class="row" style="gap:16px;flex-wrap:wrap">
-              <span class="muted small">离开次数：
-                <b :style="{ color: (proctorOf(gradeTarget.student_id).exit_count || 0) > (gradePractice?.proctor?.max_exits ?? 0) ? 'var(--danger)' : 'inherit' }">
-                  {{ proctorOf(gradeTarget.student_id).exit_count || 0 }} / {{ gradePractice?.proctor?.max_exits ?? 0 }}
-                </b>
-              </span>
-              <span class="muted small">用时：<b>{{ proctorOf(gradeTarget.student_id).duration_used ? fmtDur(proctorOf(gradeTarget.student_id).duration_used) : '—' }}</b></span>
-              <span class="muted small">IP：<b>{{ proctorOf(gradeTarget.student_id).ip || '—' }}</b></span>
-              <span class="muted small">屏幕：<b>{{ proctorOf(gradeTarget.student_id).screen || '—' }}</b></span>
-              <span class="badge-soft" :class="{
-                ok: proctorOf(gradeTarget.student_id).proctor_status === 'ok',
-                warn: proctorOf(gradeTarget.student_id).proctor_status === 'warning',
-                bad: ['violation', 'late'].includes(proctorOf(gradeTarget.student_id).proctor_status)
-              }">{{ proctorOf(gradeTarget.student_id).proctor_status }}</span>
-            </div>
-            <div class="muted small" style="margin-top:4px;word-break:break-all">浏览器：{{ proctorOf(gradeTarget.student_id).user_agent || '—' }}</div>
-            <div class="row" style="justify-content:flex-end;margin-top:6px">
-              <button class="btn small" @click="openProctor(gradePractice)"><Icon name="eye" :size="13" /> 查看监考时间线与截图</button>
-            </div>
-          </div>
-
           <!-- 学员拍照 / 语音 -->
           <div v-if="gradeTarget.attachments && gradeTarget.attachments.length" class="grade-attach">
             <div class="row" style="justify-content:space-between;margin-bottom:8px">
@@ -860,10 +756,6 @@ function switchTab(name) {
     <!-- 圈画批注 -->
     <AnnotationEditor v-if="annotating" :src="practiceFileUrl(annotating.att.key)" :shapes="annotating.shapes"
       :title="'批注 · ' + (gradeTarget?.student_name || '学员')" @close="annotating = null" @save="saveAnnotation" />
-
-    <!-- 监考台：离开次数 / 时间线 / 截图 / 浏览器信息 -->
-    <ProctorDashboard v-if="showProctor" :practice-id="proctorPractice?.id || 0"
-      :title="proctorPractice?.title || ''" @close="showProctor = false" />
 
     <!-- 内置题库 -->
     <Modal v-if="showBank" title="内置题库（导入到本练习）" wide @close="showBank = false">

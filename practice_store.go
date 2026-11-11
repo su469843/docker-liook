@@ -23,7 +23,7 @@ type Practice struct {
 	CourseTitle string `json:"course_title,omitempty"`
 	TeacherID   int64  `json:"teacher_id"`
 	Title       string `json:"title"`
-	Kind        string `json:"kind"`    // homework | quiz | word | sentence
+	Kind        string `json:"kind"`    // homework | quiz | word | sentence | redo
 	Subject     string `json:"subject"` // english | math | chinese | other
 	Description string `json:"description"`
 	Deadline    string `json:"deadline"` // RFC3339，空 = 不限
@@ -31,8 +31,11 @@ type Practice struct {
 	Published   bool   `json:"published"`
 	AllowPhoto  bool   `json:"allow_photo"` // 允许拍照提交作业
 	AllowVoice  bool   `json:"allow_voice"` // 允许语音提交作业
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	// OwnerID 非零表示「仅该学员可见」的练习（错题重练）；RedoOf 记录重练来源
+	OwnerID   int64  `json:"owner_id,omitempty"`
+	RedoOf    int64  `json:"redo_of,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 
 	QuestionCount  int64               `json:"question_count"`
 	TotalScore     float64             `json:"total_score"`
@@ -40,7 +43,6 @@ type Practice struct {
 	PendingCount   int64               `json:"pending_count,omitempty"`   // 老师视角：待批改份数
 	StudentCount   int64               `json:"student_count,omitempty"`   // 老师视角：课程学员数
 	CanManage      bool                `json:"can_manage,omitempty"`
-	Proctor        ProctorConfig       `json:"proctor"`              // 严格模式 / 监考配置
 	Submission     *PracticeSubmission `json:"submission,omitempty"` // 学员视角：我的提交摘要
 }
 
@@ -140,6 +142,8 @@ CREATE TABLE IF NOT EXISTS practices(
   published INTEGER NOT NULL DEFAULT 1,
   allow_photo INTEGER NOT NULL DEFAULT 1,
   allow_voice INTEGER NOT NULL DEFAULT 1,
+  owner_id INTEGER NOT NULL DEFAULT 0,
+  redo_of INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT ''
 );
@@ -192,6 +196,13 @@ CREATE INDEX IF NOT EXISTS idx_checkins_user_day ON checkins(user_id, day);
 	if err != nil {
 		return err
 	}
+	// 老库补列：错题重练（owner_id / redo_of；列已存在时报错，忽略）
+	for _, ddl := range []string{
+		`ALTER TABLE practices ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE practices ADD COLUMN redo_of INTEGER NOT NULL DEFAULT 0`,
+	} {
+		_, _ = s.db.Exec(ddl)
+	}
 	return s.ensurePracticeMediaSchema()
 }
 
@@ -212,7 +223,7 @@ SELECT p.id, p.course_id, COALESCE(c.title, ''), p.teacher_id, p.title, p.kind, 
        (SELECT COUNT(*) FROM practice_submissions s WHERE s.practice_id = p.id),
        (SELECT COUNT(*) FROM practice_submissions s WHERE s.practice_id = p.id AND s.graded = 0),
        (SELECT COUNT(*) FROM enrollments en WHERE en.course_id = p.course_id),
-       p.allow_photo, p.allow_voice`
+       p.allow_photo, p.allow_voice, p.owner_id, p.redo_of`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -224,7 +235,7 @@ func scanPractice(sc scanner) (Practice, error) {
 	err := sc.Scan(&p.ID, &p.CourseID, &p.CourseTitle, &p.TeacherID, &p.Title, &p.Kind, &p.Subject,
 		&p.Description, &p.Deadline, &p.Duration, &published, &p.CreatedAt, &p.UpdatedAt,
 		&p.QuestionCount, &p.TotalScore, &p.SubmittedCount, &p.PendingCount, &p.StudentCount,
-		&allowPhoto, &allowVoice)
+		&allowPhoto, &allowVoice, &p.OwnerID, &p.RedoOf)
 	if err != nil {
 		return p, err
 	}
@@ -245,7 +256,7 @@ func scanPracticeWithSubmission(sc scanner) (Practice, error) {
 	err := sc.Scan(&p.ID, &p.CourseID, &p.CourseTitle, &p.TeacherID, &p.Title, &p.Kind, &p.Subject,
 		&p.Description, &p.Deadline, &p.Duration, &published, &p.CreatedAt, &p.UpdatedAt,
 		&p.QuestionCount, &p.TotalScore, &p.SubmittedCount, &p.PendingCount, &p.StudentCount,
-		&allowPhoto, &allowVoice,
+		&allowPhoto, &allowVoice, &p.OwnerID, &p.RedoOf,
 		&subID, &subStatus, &subGraded, &subScore, &subTotal, &subAt, &subComment)
 	if err != nil {
 		return p, err
@@ -405,8 +416,8 @@ func (s *Store) ListPracticesByCourse(courseID int64, publishedOnly bool, studen
 			FROM practices p
 			LEFT JOIN courses c ON c.id = p.course_id
 			LEFT JOIN practice_submissions s ON s.practice_id = p.id AND s.student_id = ?
-			WHERE p.course_id = ?`
-		args := []any{studentID, courseID}
+			WHERE p.course_id = ? AND (p.owner_id = 0 OR p.owner_id = ?)`
+		args := []any{studentID, courseID, studentID}
 		if publishedOnly {
 			q += ` AND p.published = 1`
 		}
@@ -417,7 +428,7 @@ func (s *Store) ListPracticesByCourse(courseID int64, publishedOnly bool, studen
 		}
 		return scanPractices(rows, true)
 	}
-	q := practiceBaseSelect + ` FROM practices p LEFT JOIN courses c ON c.id = p.course_id WHERE p.course_id = ?`
+	q := practiceBaseSelect + ` FROM practices p LEFT JOIN courses c ON c.id = p.course_id WHERE p.course_id = ? AND p.owner_id = 0`
 	if publishedOnly {
 		q += ` AND p.published = 1`
 	}
@@ -431,7 +442,7 @@ func (s *Store) ListPracticesByCourse(courseID int64, publishedOnly bool, studen
 
 func (s *Store) ListPracticesByTeacher(teacherID int64) ([]Practice, error) {
 	rows, err := s.db.Query(practiceBaseSelect+` FROM practices p LEFT JOIN courses c ON c.id = p.course_id
-		WHERE c.teacher_id = ? ORDER BY p.id DESC`, teacherID)
+		WHERE c.teacher_id = ? AND p.owner_id = 0 ORDER BY p.id DESC`, teacherID)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +450,7 @@ func (s *Store) ListPracticesByTeacher(teacherID int64) ([]Practice, error) {
 }
 
 func (s *Store) ListPracticesAll() ([]Practice, error) {
-	rows, err := s.db.Query(practiceBaseSelect + ` FROM practices p LEFT JOIN courses c ON c.id = p.course_id ORDER BY p.id DESC`)
+	rows, err := s.db.Query(practiceBaseSelect + ` FROM practices p LEFT JOIN courses c ON c.id = p.course_id WHERE p.owner_id = 0 ORDER BY p.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -453,8 +464,8 @@ func (s *Store) ListPracticesForStudent(studentID int64) ([]Practice, error) {
 		JOIN courses c ON c.id = p.course_id
 		JOIN enrollments e ON e.course_id = p.course_id AND e.student_id = ?
 		LEFT JOIN practice_submissions s ON s.practice_id = p.id AND s.student_id = ?
-		WHERE p.published = 1 ORDER BY p.id DESC`
-	rows, err := s.db.Query(q, studentID, studentID)
+		WHERE p.published = 1 AND (p.owner_id = 0 OR p.owner_id = ?) ORDER BY p.id DESC`
+	rows, err := s.db.Query(q, studentID, studentID, studentID)
 	if err != nil {
 		return nil, err
 	}
@@ -801,4 +812,132 @@ func (s *Store) CourseCheckinStats(courseID int64, month string) ([]StudentCheck
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+// ---------------- 错题本 / 错题重练 ----------------
+
+// WrongBookGroup 错题本里按练习分组的一组错题
+type WrongBookGroup struct {
+	PracticeID  int64           `json:"practice_id"`
+	Title       string          `json:"title"`
+	Kind        string          `json:"kind"`
+	Subject     string          `json:"subject"`
+	SubmittedAt string          `json:"submitted_at"`
+	Graded      bool            `json:"graded"`
+	Questions   []WrongBookItem `json:"questions"`
+}
+
+// WrongBookItem 一道错题（含我的作答与标准答案 / 解析）
+type WrongBookItem struct {
+	QuestionID int64    `json:"question_id"`
+	Type       string   `json:"type"`
+	Stem       string   `json:"stem"`
+	Options    []string `json:"options,omitempty"`
+	Answer     string   `json:"answer,omitempty"`
+	Analysis   string   `json:"analysis,omitempty"`
+	Score      float64  `json:"score"`
+	MyAnswer   string   `json:"my_answer"`
+}
+
+// WrongBook 学员的错题本：从已交卷的练习里挑出判为错误的客观题，按练习分组
+func (s *Store) WrongBook(studentID int64) ([]WrongBookGroup, error) {
+	rows, err := s.db.Query(`SELECT p.id, p.title, p.kind, p.subject, s.submitted_at, s.graded, s.answers
+		FROM practice_submissions s JOIN practices p ON p.id = s.practice_id
+		WHERE s.student_id = ? AND p.owner_id = 0
+		ORDER BY s.submitted_at DESC, p.id DESC`, studentID)
+	if err != nil {
+		return nil, err
+	}
+	type subRow struct {
+		practiceID                        int64
+		title, kind, subject, submittedAt string
+		graded                            int
+		answers                           string
+	}
+	subs := []subRow{}
+	for rows.Next() {
+		var r subRow
+		if err := rows.Scan(&r.practiceID, &r.title, &r.kind, &r.subject, &r.submittedAt, &r.graded, &r.answers); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		subs = append(subs, r)
+	}
+	rows.Close()
+
+	out := []WrongBookGroup{}
+	for _, r := range subs {
+		qs, err := s.GetQuestions(r.practiceID)
+		if err != nil {
+			continue
+		}
+		var answers []QuestionAnswer
+		if r.answers != "" {
+			_ = json.Unmarshal([]byte(r.answers), &answers)
+		}
+		byID := map[int64]QuestionAnswer{}
+		for _, a := range answers {
+			byID[a.QuestionID] = a
+		}
+		group := WrongBookGroup{PracticeID: r.practiceID, Title: r.title, Kind: r.kind,
+			Subject: r.subject, SubmittedAt: r.submittedAt, Graded: r.graded == 1, Questions: []WrongBookItem{}}
+		for _, q := range qs {
+			a, ok := byID[q.ID]
+			if !ok || a.Correct || q.Type == "short" {
+				continue // 只收判为错误的客观题（简答题由老师批改，不算对错）
+			}
+			group.Questions = append(group.Questions, WrongBookItem{
+				QuestionID: q.ID, Type: q.Type, Stem: q.Stem, Options: q.Options,
+				Answer: q.Answer, Analysis: q.Analysis, Score: q.Score, MyAnswer: a.Answer,
+			})
+		}
+		if len(group.Questions) > 0 {
+			out = append(out, group)
+		}
+	}
+	return out, nil
+}
+
+// FindOpenRedo 找学员在某练习下「还没交卷」的最近一次重练（没有则 nil）
+func (s *Store) FindOpenRedo(studentID, sourcePracticeID int64) (*Practice, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM practices
+		WHERE owner_id = ? AND redo_of = ? ORDER BY id DESC LIMIT 1`, studentID, sourcePracticeID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sub, err := s.GetPracticeSubmission(id, studentID)
+	if err == nil && sub != nil {
+		return nil, nil // 最近一次重练已交卷，允许再开新的
+	}
+	return s.GetPractice(id)
+}
+
+// CreateRedoPractice 以学员身份创建一份「错题重练」：仅本人可见、普通模式（无监考）
+func (s *Store) CreateRedoPractice(src *Practice, studentID int64, title string, qs []PracticeQuestion) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	t := now()
+	res, err := tx.Exec(`INSERT INTO practices(course_id, teacher_id, title, kind, subject, description, deadline, duration,
+		published, allow_photo, allow_voice, owner_id, redo_of, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		src.CourseID, src.TeacherID, title, "redo", src.Subject, "", "", 0,
+		1, 0, 0, studentID, src.ID, t, t)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err := insertQuestions(tx, id, qs); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }

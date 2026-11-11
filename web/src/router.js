@@ -10,6 +10,7 @@ import StudioCourse from './views/StudioCourse.vue'
 import StudioPractice from './views/StudioPractice.vue'
 import PracticeCenter from './views/PracticeCenter.vue'
 import PracticeDetail from './views/PracticeDetail.vue'
+import WrongBook from './views/WrongBook.vue'
 import Admin from './views/Admin.vue'
 import { store, loadMe, loadConfig, homeFor } from './store'
 
@@ -25,6 +26,7 @@ export const router = createRouter({
     { path: '/messages', component: Messages },
     { path: '/practice', component: PracticeCenter },
     { path: '/practice/:id', component: PracticeDetail },
+    { path: '/wrongbook', component: WrongBook, meta: { roles: ['student'] } },
     { path: '/studio', component: Studio, meta: { roles: ['teacher', 'admin'] } },
     { path: '/studio/:courseId', component: StudioCourse, meta: { roles: ['teacher', 'admin'] } },
     { path: '/studio/:courseId/practice', component: StudioPractice, meta: { roles: ['teacher', 'admin'] } },

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var practiceKinds = map[string]bool{"homework": true, "quiz": true, "word": true, "sentence": true}
+var practiceKinds = map[string]bool{"homework": true, "quiz": true, "word": true, "sentence": true, "redo": true}
 var practiceSubjects = map[string]bool{"english": true, "math": true, "chinese": true, "other": true}
 var checkinKinds = map[string]bool{"word": true, "sentence": true, "reading": true}
 
@@ -80,7 +80,6 @@ type practiceReq struct {
 	Published   *bool          `json:"published"`
 	AllowPhoto  *bool          `json:"allow_photo"`
 	AllowVoice  *bool          `json:"allow_voice"`
-	Proctor     *proctorReq    `json:"proctor"`   // 严格模式配置（nil = 保持原值）
 	Questions   *[]questionReq `json:"questions"` // nil = 更新时不动题目
 }
 
@@ -237,7 +236,6 @@ func (a *API) handleListPractices(w http.ResponseWriter, r *http.Request, u *Use
 		}
 		for i := range list {
 			list[i].CanManage = manage
-			list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
 		}
 	} else {
 		switch u.Role {
@@ -245,19 +243,14 @@ func (a *API) handleListPractices(w http.ResponseWriter, r *http.Request, u *Use
 			list, err = a.db.ListPracticesAll()
 			for i := range list {
 				list[i].CanManage = true
-				list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
 			}
 		case "teacher":
 			list, err = a.db.ListPracticesByTeacher(u.ID)
 			for i := range list {
 				list[i].CanManage = true
-				list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
 			}
 		default:
 			list, err = a.db.ListPracticesForStudent(u.ID)
-			for i := range list {
-				list[i].Proctor = a.db.GetProctorConfig(list[i].ID)
-			}
 		}
 	}
 	if err != nil {
@@ -281,7 +274,6 @@ func (a *API) handleGetPractice(w http.ResponseWriter, r *http.Request, u *User)
 		writeErr(w, 404, "练习不存在")
 		return
 	}
-	p.Proctor = a.db.GetProctorConfig(id)
 	course, err := a.db.GetCourse(p.CourseID)
 	if err != nil {
 		writeErr(w, 404, "练习所属课程不存在")
@@ -291,6 +283,11 @@ func (a *API) handleGetPractice(w http.ResponseWriter, r *http.Request, u *User)
 	if manage {
 		p.CanManage = true
 	} else {
+		// 错题重练只有本人可见，其他学员（包括同课程）看不到
+		if p.OwnerID != 0 && p.OwnerID != u.ID {
+			writeErr(w, 404, "练习不存在")
+			return
+		}
 		enrolled, _ := a.db.IsEnrolled(course.ID, u.ID)
 		if !enrolled || !p.Published {
 			writeErr(w, http.StatusForbidden, "无权查看该练习")
@@ -321,19 +318,10 @@ func (a *API) handleGetPractice(w http.ResponseWriter, r *http.Request, u *User)
 			questions[i].Analysis = ""
 		}
 	}
-	// 严格模式：学员的答卷状态（开始时间、已离开次数），用于续答与计时
-	var attempt *ProctorAttempt
-	if !manage && p.Proctor.Mode == "strict" {
-		if sub == nil {
-			att := a.db.ProctorAttemptInfo(id, u.ID)
-			attempt = &att
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"practice":   p,
 		"questions":  questions,
 		"submission": sub,
-		"attempt":    attempt,
 	})
 }
 
@@ -374,22 +362,9 @@ func (a *API) handleCreatePractice(w http.ResponseWriter, r *http.Request, u *Us
 		writeErr(w, 400, "还没有题目：请先添加题目，或允许学员拍照/语音提交")
 		return
 	}
-	// 严格模式配置（默认普通模式）
-	proctorCfg := defaultProctorConfig()
-	if req.Proctor != nil {
-		var msg string
-		if proctorCfg, msg = req.Proctor.toConfig(proctorCfg); msg != "" {
-			writeErr(w, 400, msg)
-			return
-		}
-	}
 	id, err := a.db.CreatePractice(p, qs)
 	if err != nil {
 		writeErr(w, 500, "创建练习失败: "+err.Error())
-		return
-	}
-	if err := a.db.SaveProctorConfig(id, proctorCfg); err != nil {
-		writeErr(w, 500, "保存监考配置失败: "+err.Error())
 		return
 	}
 	saved, err := a.db.GetPractice(id)
@@ -398,7 +373,6 @@ func (a *API) handleCreatePractice(w http.ResponseWriter, r *http.Request, u *Us
 		return
 	}
 	saved.CanManage = true
-	saved.Proctor = proctorCfg
 	writeJSON(w, http.StatusCreated, saved)
 }
 
@@ -454,21 +428,8 @@ func (a *API) handleUpdatePractice(w http.ResponseWriter, r *http.Request, u *Us
 		return
 	}
 	p.Published = published
-	// 严格模式配置：与旧值合并后保存
-	proctorCfg := a.db.GetProctorConfig(id)
-	if req.Proctor != nil {
-		var msg string
-		if proctorCfg, msg = req.Proctor.toConfig(proctorCfg); msg != "" {
-			writeErr(w, 400, msg)
-			return
-		}
-	}
 	if err := a.db.UpdatePractice(p, qs, withQuestions); err != nil {
 		writeErr(w, 500, "保存练习失败: "+err.Error())
-		return
-	}
-	if err := a.db.SaveProctorConfig(id, proctorCfg); err != nil {
-		writeErr(w, 500, "保存监考配置失败: "+err.Error())
 		return
 	}
 	saved, err := a.db.GetPractice(id)
@@ -477,7 +438,6 @@ func (a *API) handleUpdatePractice(w http.ResponseWriter, r *http.Request, u *Us
 		return
 	}
 	saved.CanManage = true
-	saved.Proctor = proctorCfg
 	writeJSON(w, http.StatusOK, saved)
 }
 
@@ -500,9 +460,7 @@ func (a *API) handleDeletePractice(w http.ResponseWriter, r *http.Request, u *Us
 		writeErr(w, 500, "删除练习失败: "+err.Error())
 		return
 	}
-	a.db.DeletePracticeProctor(id)
 	a.stg().DeletePrefix(r.Context(), fmt.Sprintf("practice/%d/", id))
-	a.stg().DeletePrefix(r.Context(), fmt.Sprintf("proctor/%d/", id))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -524,6 +482,11 @@ func (a *API) handleSubmitPractice(w http.ResponseWriter, r *http.Request, u *Us
 	}
 	if !p.Published {
 		writeErr(w, http.StatusForbidden, "练习尚未发布")
+		return
+	}
+	// 错题重练只有本人能提交
+	if p.OwnerID != 0 && p.OwnerID != u.ID {
+		writeErr(w, 404, "练习不存在")
 		return
 	}
 	enrolled, _ := a.db.IsEnrolled(p.CourseID, u.ID)
@@ -563,12 +526,6 @@ func (a *API) handleSubmitPractice(w http.ResponseWriter, r *http.Request, u *Us
 		writeErr(w, 400, msg)
 		return
 	}
-	// 严格模式：必须已开始答题，并计算是否超时
-	late, proctorExits, guardMsg := a.strictSubmitGuard(p, u.ID)
-	if guardMsg != "" {
-		writeErr(w, 400, guardMsg)
-		return
-	}
 	answers := make(map[int64]string, len(req.Answers))
 	for _, ans := range req.Answers {
 		answers[ans.QuestionID] = trimText(ans.Answer, 4000)
@@ -604,16 +561,6 @@ func (a *API) handleSubmitPractice(w http.ResponseWriter, r *http.Request, u *Us
 	if err != nil {
 		writeErr(w, 500, "提交失败: "+err.Error())
 		return
-	}
-	// 严格模式：落一条 submit 事件，老师端能看到交卷时是否超时/被判定违规
-	if cfg := a.db.GetProctorConfig(id); cfg.Mode == "strict" {
-		d := ProctorDetail{Reason: "manual", IP: clientIP(r), UA: trimText(r.UserAgent(), 300), Exits: proctorExits, Late: late}
-		if attempt := a.db.ProctorAttemptInfo(id, u.ID); attempt.StartedAt != "" {
-			if t, ok := parseRFC3339(attempt.StartedAt); ok {
-				d.DurationSec = int(time.Since(t).Seconds())
-			}
-		}
-		_, _ = a.db.AddProctorEvent(id, u.ID, "submit", proctorDetailJSON(d), "")
 	}
 	saved, err := a.db.GetSubmissionByID(sid)
 	if err != nil {
@@ -855,4 +802,94 @@ func (a *API) handleCourseCheckins(w http.ResponseWriter, r *http.Request, u *Us
 		stats = []StudentCheckinStat{}
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// ---------------- 错题本 / 错题重练 ----------------
+
+// handleWrongBook 学员错题本：已交卷练习里判错的客观题，按练习分组（简答题不算对错，不收）
+func (a *API) handleWrongBook(w http.ResponseWriter, r *http.Request, u *User) {
+	if u.Role != "student" {
+		writeErr(w, http.StatusForbidden, "只有学员有错题本")
+		return
+	}
+	groups, err := a.db.WrongBook(u.ID)
+	if err != nil {
+		writeErr(w, 500, "查询错题本失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
+}
+
+// handleRedoWrong 从错题本一键重练：把某份练习里自己判错的客观题组成一份新的重练练习。
+// 重练练习仅本人可见（owner_id）、固定普通模式（无监考）；上一份重练还没交卷时直接复用。
+func (a *API) handleRedoWrong(w http.ResponseWriter, r *http.Request, u *User) {
+	if u.Role != "student" {
+		writeErr(w, http.StatusForbidden, "只有学员可以重练错题")
+		return
+	}
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, 400, "无效的练习 ID")
+		return
+	}
+	p, err := a.db.GetPractice(id)
+	if err != nil {
+		writeErr(w, 404, "练习不存在")
+		return
+	}
+	if p.OwnerID != 0 {
+		writeErr(w, 400, "重练练习不能再生成重练")
+		return
+	}
+	if !p.Published {
+		writeErr(w, http.StatusForbidden, "练习尚未发布")
+		return
+	}
+	enrolled, _ := a.db.IsEnrolled(p.CourseID, u.ID)
+	if !enrolled {
+		writeErr(w, http.StatusForbidden, "你还没有加入该课程")
+		return
+	}
+	sub, err := a.db.GetPracticeSubmission(id, u.ID)
+	if err != nil || sub == nil {
+		writeErr(w, 400, "请先完成并提交这份练习，再重练错题")
+		return
+	}
+	// 上一份重练还没交卷：直接返回它，避免堆一堆重复的重练
+	if open, e := a.db.FindOpenRedo(u.ID, id); e == nil && open != nil {
+		writeJSON(w, http.StatusOK, open)
+		return
+	}
+	questions, err := a.db.GetQuestions(id)
+	if err != nil {
+		writeErr(w, 500, "查询题目失败")
+		return
+	}
+	myWrong := map[int64]string{}
+	for _, ans := range sub.Answers {
+		if !ans.Correct {
+			myWrong[ans.QuestionID] = ans.Answer
+		}
+	}
+	wrong := make([]PracticeQuestion, 0, len(myWrong))
+	for _, q := range questions {
+		if _, hit := myWrong[q.ID]; hit && q.Type != "short" {
+			wrong = append(wrong, q)
+		}
+	}
+	if len(wrong) == 0 {
+		writeErr(w, 400, "这份练习没有判错的客观题，不需要重练")
+		return
+	}
+	created, err := a.db.CreateRedoPractice(p, u.ID, "错题重练 · "+p.Title, wrong)
+	if err != nil {
+		writeErr(w, 500, "创建重练失败: "+err.Error())
+		return
+	}
+	saved, err := a.db.GetPractice(created)
+	if err != nil {
+		writeErr(w, 500, "重练回查失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, saved)
 }
